@@ -63,6 +63,22 @@ python scripts/extract_features.py --config config/dataset_config.yaml
 - **MAT 文件解析**：`src/data_io/mat_loader.py` 可解析带有 `DE`/`FE`/`BA` 信号及 `RPM` 变量的 Case Western 数据，也兼容目标域单变量 `.mat` 文件。
 - **可配置性**：全部关键参数（窗口长度、重叠率、筛选策略、输出路径等）均可在 YAML 中调整，方便后续迭代与实验。
 
+## 特征分析与可视化
+
+为了快速评估源/目标域特征的类别可分性并直观理解原始时序信号，新增了分析脚本：
+
+```bash
+python scripts/analyze_features.py --config config/dataset_config.yaml --max-records 6 --preview-seconds 3
+```
+
+脚本会在 `artifacts/analysis/`（或通过 `--analysis-dir` 指定的目录）下生成：
+
+- `feature_statistics.csv`：对全部特征列计算均值、标准差、方差、最大值、最小值；
+- `tsne_embedding.png` / `umap_embedding.png`：源域与目标域特征的低维嵌入图；
+- `target_time_series_overview.png` 与 `target_*_diagnostics.png`（若源域可用则另含 `source_*` 图）：展示时域波形、分段位置与谱图。
+
+关于任务1数据字典、字段解释及处理流程的完整说明，详见新增文档 [`TASK1_REPORT.md`](TASK1_REPORT.md)。
+
 ## 下一步建议
 
 - 对源域特征运行可视化（t-SNE/UMAP）以评估类别可分性，并与目标域特征对比；
