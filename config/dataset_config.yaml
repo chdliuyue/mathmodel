@@ -1,0 +1,52 @@
+# Configuration driving the feature extraction pipeline for task 1.
+source:
+  root: sourceData
+  pattern: "**/*.mat"
+  default_sampling_rate: 12000
+  segmentation:
+    window_seconds: 1.0
+    overlap: 0.5
+    drop_last: true
+  selection:
+    rpm_target: 600
+    sampling_rate_target: 32000
+    top_k_per_label: 15
+    rpm_weight: 0.6
+    sampling_rate_weight: 0.3
+    load_weight: 0.05
+    fault_size_weight: 0.05
+    prefer_load: 0
+    prefer_fault_sizes: [0.007, 0.014, 0.021]
+  channel_bearings:
+    DE: SKF6205
+    FE: SKF6203
+    BA: SKF6205
+  feature:
+    include_frequency_domain: true
+    include_envelope_domain: true
+    include_fault_bands: true
+    fault_bandwidth: 5.0
+
+target:
+  root: targetData
+  pattern: "*.mat"
+  sampling_rate: 32000
+  rpm: 600
+  segmentation:
+    window_seconds: 1.0
+    overlap: 0.5
+    drop_last: true
+  channel_bearings:
+    SENSOR: SKF6205
+  feature:
+    include_frequency_domain: true
+    include_envelope_domain: true
+    include_fault_bands: true
+    fault_bandwidth: 5.0
+
+outputs:
+  directory: artifacts
+  source_feature_table: source_features.csv
+  source_metadata: source_selection.csv
+  target_feature_table: target_features.csv
+  target_metadata: target_metadata.csv

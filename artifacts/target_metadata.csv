@@ -1,0 +1,17 @@
+file_id,file_path,rpm,sampling_rate,channel_count
+A,targetData/A.mat,600.0,32000.0,1
+B,targetData/B.mat,600.0,32000.0,1
+C,targetData/C.mat,600.0,32000.0,1
+D,targetData/D.mat,600.0,32000.0,1
+E,targetData/E.mat,600.0,32000.0,1
+F,targetData/F.mat,600.0,32000.0,1
+G,targetData/G.mat,600.0,32000.0,1
+H,targetData/H.mat,600.0,32000.0,1
+I,targetData/I.mat,600.0,32000.0,1
+J,targetData/J.mat,600.0,32000.0,1
+K,targetData/K.mat,600.0,32000.0,1
+L,targetData/L.mat,600.0,32000.0,1
+M,targetData/M.mat,600.0,32000.0,1
+N,targetData/N.mat,600.0,32000.0,1
+O,targetData/O.mat,600.0,32000.0,1
+P,targetData/P.mat,600.0,32000.0,1
