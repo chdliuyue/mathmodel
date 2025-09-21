@@ -1,0 +1,86 @@
+# 任务1：数据处理全流程与数据字典
+
+## 背景与目标
+
+竞赛的任务1聚焦于“数据分析与故障特征提取”。本仓库已经实现从源域与目标域振动信号中筛选代表样本、分段、计算多域特征并输出结构化特征表的全流程。核心代码位于 `src/data_io`、`src/feature_engineering` 与 `src/pipelines`，并通过脚本 `scripts/extract_features.py` 完成自动化处理。
+
+## 数据资源概览
+
+### 源域（台架试验数据）
+
+- 假定目录：`sourceData/`，组织形式兼容 Case Western Reserve University (CWRU) 轴承数据集。
+- 文件命名中包含故障类型（IR/OR/B/N）、故障尺寸、负载等级等信息，`src/data_io/mat_loader.py` 负责解析并构造 `FileSummary`/`SignalRecord` 数据结构。该模块同时推断采样率、转速等元数据。 
+- `src/data_io/dataset_selection.py` 根据配置计算与目标工况的相似度，为每个类别挑选 `top_k_per_label` 个代表文件，保证源域数据与目标域尽可能对齐。
+
+### 目标域（现场采集数据）
+
+- 仓库自带 16 条 8 秒振动信号，位于 `targetData/*.mat`。
+- 采样率与转速已知（默认 32 kHz、600 rpm），`load_target_directory` 会读取单通道信号并保存成与源域一致的结构，便于统一处理。
+
+## 数据处理流程
+
+1. **源域筛选**：`SelectionConfig` 对 RPM、采样率、负载、故障尺寸分别赋予权重，结合 `score_summary` 函数的归一化差异度计算，为每一类标签选出最相似的文件。
+2. **信号分段**：`segment_signal` 使用滑窗（默认 1 s，重叠 50%）将长时序切割成固定长度片段，缓解非平稳影响并扩充样本量。
+3. **特征提取**：`FeatureExtractor` 组合多个特征族：
+   - `time_domain_features` 计算均值、标准差、峭度、峰值因子等时域统计量；
+   - `frequency_domain_features` 获取谱质心、带宽、谱熵、主频、总能量等频域描述；
+   - `envelope_features` 通过 Hilbert 包络进一步提取包络统计与包络谱信息；
+   - `fault_frequency_band_features` 根据轴承几何参数（SKF6205/6203）计算 BPFO/BPFI/BSF/FTF 附近的能量与能量占比。
+4. **结果输出**：`FeatureDatasetBuilder` 为每个分段生成一行特征记录，包含元数据（文件、通道、段索引、采样率、标签、故障尺寸等）以及所有特征字段，最终写入 CSV 供后续建模或分析使用。
+
+## 特征表字段说明
+
+特征表包含三大类字段：
+
+1. **元数据列**：
+   - `dataset`：数据域标识（source/target）；
+   - `file_id` / `file_path` / `channel`：原始文件与通道信息；
+   - `segment_index`、`start_sample`、`end_sample`、`segment_length`、`segment_duration`：分段后的定位信息；
+   - `sampling_rate`、`rpm`：采样率与轴转速；
+   - `label`、`label_code`、`load_hp`、`fault_size_inch/mm`：源域标签与故障尺寸、负载等信息（目标域为空值）；
+   - `selection_score`：源域样本与目标工况的匹配得分。
+
+2. **时域特征（前缀 `time_`）**：均值、标准差、方差、均方根、峰峰值、峭度、偏度、形状因子、峰值因子、冲击因子、裕度因子、信噪比等。
+
+3. **频域/包络/故障带特征**：
+   - `freq_` 前缀：谱质心、频谱分布的偏度/峭度、主频、谱熵、谱峰值、总能量等；
+   - `env_` 前缀：Hilbert 包络的时域统计、包络谱峰值及带宽、包络谱熵等；
+   - `fault_` 前缀：针对 FTF/BPFO/BPFI/BSF ±bandwidth (默认 ±5 Hz) 的能量与能量占比。
+
+这些特征字段直接来源于 `src/feature_engineering/statistics.py` 与 `src/feature_engineering/spectral.py` 的函数输出，采用固定命名规则便于后续筛选。
+
+## 数据集制作方式
+
+运行 `python scripts/extract_features.py --config config/dataset_config.yaml` 即可按照配置完成以下步骤：
+
+1. 读取源域、目标域目录及分段、特征、筛选等参数；
+2. 若源域数据存在，则在 `artifacts/`（或指定目录）下生成：
+   - `source_features.csv`：分段特征表；
+   - `source_selection.csv`：被选文件及其匹配得分；
+3. 生成目标域 `target_features.csv` 与 `target_metadata.csv`；
+4. 所有输出均包含完整的元数据与特征列，可直接用于分析或建模。
+
+## 统计分析与可视化
+
+为评估类别可分性、直观理解数据分布，新增脚本 `scripts/analyze_features.py` 支持：
+
+- 读取源/目标特征表并自动合并；
+- 计算特征均值、标准差、方差、最小值、最大值等统计量，保存为 `feature_statistics.csv`；
+- 生成 t-SNE、UMAP 嵌入图，直观比较源域与目标域特征空间；
+- 绘制目标域（及可用时的源域）原始时域波形与谱图诊断视图。
+
+运行示例：
+
+```bash
+python scripts/analyze_features.py --config config/dataset_config.yaml --max-records 6 --preview-seconds 3
+```
+
+输出默认存放在 `artifacts/analysis/` 目录，可通过参数 `--analysis-dir` 自定义位置。
+
+## 成果意义
+
+- **源域筛选**使得后续迁移学习建立在与目标工况更相似的数据上，减少域间差异；
+- **多域特征**覆盖时域、频域、包络谱与故障特征频带，兼顾传统诊断指标与机理解释；
+- **统一的数据字典**与统计分析脚本便于快速审查数据质量、对比源/目标域差异，为后续模型训练与迁移、自适应处理奠定基础。
+
+如需更多背景与操作说明，可结合 `README.md` 中的流程介绍与本数据字典一并参考。

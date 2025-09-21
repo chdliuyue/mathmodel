@@ -3,3 +3,5 @@ scipy
 pandas
 scikit-learn
 pyyaml
+matplotlib
+umap-learn
