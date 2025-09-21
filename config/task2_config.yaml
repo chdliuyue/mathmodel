@@ -1,0 +1,56 @@
+# Configuration for training the source-domain diagnostic model (task 2).
+features:
+  table_path: artifacts/source_features.csv
+  label_column: label
+  feature_columns: null  # Use automatic numeric feature discovery
+  exclude_columns:
+    - dataset
+    - file_id
+    - file_path
+    - channel
+    - segment_index
+    - start_sample
+    - end_sample
+    - selection_score
+    - label_code
+
+split:
+  test_size: 0.25
+  random_state: 42
+  stratify: true
+
+model:
+  penalty: l2
+  C: 1.5
+  solver: lbfgs
+  max_iter: 500
+  multi_class: auto
+  class_weight: balanced
+
+alignment:
+  enabled: true
+  epsilon: 1.0e-6
+
+cross_validation:
+  enabled: true
+  folds: 5
+  shuffle: true
+
+interpretability:
+  permutation_importance:
+    enabled: true
+    n_repeats: 10
+    random_state: 42
+    scoring: f1_macro
+
+outputs:
+  directory: artifacts/task2
+  metrics_file: metrics.json
+  classification_report: classification_report.csv
+  confusion_matrix: confusion_matrix.csv
+  coefficient_importance: coefficient_importance.csv
+  permutation_importance: permutation_importance.csv
+  predictions: predictions.csv
+  model_path: source_domain_model.joblib
+  feature_summary: feature_summary.csv
+  features_used: features_used.txt

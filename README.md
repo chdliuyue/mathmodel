@@ -1,6 +1,11 @@
-# 高速列车轴承智能故障诊断：任务1代码说明
+# 高速列车轴承智能故障诊断：任务1&2代码说明
 
-本仓库实现了竞赛题目第一问（“数据分析与故障特征提取”）所需的主要代码流程。核心目标是：
+本仓库现已覆盖竞赛题目前两个任务：
+
+* **任务1：数据分析与故障特征提取** —— 自动筛选源域样本、分段并提取多域特征；
+* **任务2：源域故障诊断建模** —— 在任务1特征基础上构建具备迁移潜力、且兼顾多层可解释性的诊断模型并输出评估报表。
+
+任务1的核心目标仍然是：
 
 1. 针对源域（台架）数据自动筛选与目标域工况更接近的代表性样本；
 2. 结合轴承故障机理提取时域、频域、包络谱以及特征频带能量等特征；
@@ -13,7 +18,7 @@
 ```
 mathmodel/
 ├── config/                # YAML 配置
-├── scripts/               # 命令行脚本
+├── scripts/               # 命令行脚本（特征提取 & 诊断建模）
 ├── src/
 │   ├── data_io/           # MAT 文件解析与源数据筛选
 │   ├── feature_engineering/ # 各类特征计算模块
@@ -83,10 +88,40 @@ python scripts/analyze_features.py --config config/dataset_config.yaml --max-rec
 
 关于任务1数据字典、字段解释及处理流程的完整说明，详见新增文档 [`TASK1_REPORT.md`](TASK1_REPORT.md)。
 
+## 任务2：源域故障诊断建模
+
+在完成特征构建后，可直接调用 `scripts/train_task2_model.py` 训练源域诊断模型并生成评估与可解释性结果。模型采用**CORAL 特征对齐 + 标准化 + 带类权重的逻辑回归**结构：
+
+1. **事前可解释性**：模型仅使用任务1已定义的统计/频谱/包络特征，且在训练前自动剔除近乎常数的列；
+2. **迁移过程可解释性**：通过 `CoralAligner` 将源域特征白化，可在后续任务中注入目标域统计量完成快速迁移；
+3. **事后可解释性**：自动导出逻辑回归系数、赔率比、交叉验证表现以及基于 permutation importance 的特征贡献度。
+
+运行示例：
+
+```bash
+python scripts/train_task2_model.py --config config/task2_config.yaml
+```
+
+脚本会读取 `artifacts/source_features.csv`（若缺失将提示先执行任务1）并在 `artifacts/task2/` 下生成以下成果：
+
+| 文件 | 说明 |
+| --- | --- |
+| `metrics.json` | 训练/测试准确率、宏平均 F1、交叉验证均值与方差、CORAL 对齐诊断指标 |
+| `classification_report.csv` | `sklearn` 分类报告（含每类 Precision/Recall/F1） |
+| `confusion_matrix.csv` | 基于真实标签顺序的混淆矩阵 |
+| `coefficient_importance.csv` | 逻辑回归系数与赔率比，便于定量解释各特征贡献 |
+| `permutation_importance.csv` | permutation importance 排名（若启用） |
+| `predictions.csv` | 测试集预测结果与各类别概率 |
+| `feature_summary.csv` | 参与建模特征的统计摘要（均值/标准差等） |
+| `features_used.txt` | 训练实际使用的特征清单 |
+| `source_domain_model.joblib` | 训练完成的 scikit-learn 管线，可直接加载复用 |
+
+详细的建模策略、参数说明与结果解读见 [`TASK2_REPORT.md`](TASK2_REPORT.md)。
+
 ## 下一步建议
 
 - 对源域特征运行可视化（t-SNE/UMAP）以评估类别可分性，并与目标域特征对比；
-- 在 `source_features.csv` 上训练诊断模型（例如梯度提升、1D CNN 等），为任务2做准备；
+- 在任务2已有模型基础上进一步探索多源数据/多模型集成，为任务3 的跨域迁移奠定基础；
 - 探索统计对齐或对抗迁移等策略，将源域知识迁移至目标域，完成任务3；
 - 针对迁移模型输出进一步构建可解释性分析（任务4）。
 
