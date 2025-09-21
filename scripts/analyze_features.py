@@ -32,6 +32,7 @@ from src.analysis.feature_analysis import (
     run_umap,
     translate_statistics_columns,
 )
+from src.analysis.feature_dictionary import build_feature_dictionary
 from src.data_io.mat_loader import load_source_directory, load_target_directory
 from src.pipelines.build_feature_dataset import SegmentationConfig
 
@@ -150,6 +151,11 @@ def analyse_features(
         combined_path = analysis_root / "特征整合表.csv"
         LOGGER.info("Writing combined feature table to %s", combined_path)
         _save_dataframe_chinese(combined_report, combined_path)
+
+        dictionary_path = analysis_root / "特征中英文对照表.csv"
+        dictionary = build_feature_dictionary(combined.columns)
+        LOGGER.info("Writing bilingual feature dictionary to %s", dictionary_path)
+        _save_dataframe_chinese(dictionary, dictionary_path)
 
     signal_config = SignalPlotConfig(preview_seconds=preview_seconds)
 

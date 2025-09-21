@@ -329,7 +329,40 @@ def plot_time_series_grid(
         LOGGER.warning("Summaries did not contain any signal records")
         return
 
-    records = records[:max_records]
+    # Prioritise diversity by keeping the first occurrence of each file before truncation.
+    diverse_records: List[Tuple] = []
+    seen_files: set[str] = set()
+    for summary, record in records:
+        if summary.file_id not in seen_files:
+            diverse_records.append((summary, record))
+            seen_files.add(summary.file_id)
+    for item in records:
+        if item not in diverse_records:
+            diverse_records.append(item)
+
+    records = diverse_records
+    if len(records) > max_records:
+        candidate_indices = sorted(set(np.linspace(0, len(records) - 1, num=max_records, dtype=int)))
+        selected: List[Tuple] = []
+        seen_pairs: set[Tuple[str, str]] = set()
+        for idx in candidate_indices:
+            summary, record = records[idx]
+            key = (summary.file_id, record.channel)
+            if key in seen_pairs:
+                continue
+            selected.append((summary, record))
+            seen_pairs.add(key)
+        # Fill remaining slots if rounding caused duplicates to be skipped.
+        if len(selected) < max_records:
+            for summary, record in records:
+                key = (summary.file_id, record.channel)
+                if key in seen_pairs:
+                    continue
+                selected.append((summary, record))
+                seen_pairs.add(key)
+                if len(selected) >= max_records:
+                    break
+        records = selected[:max_records]
     if columns <= 0:
         columns = 1
     rows = ceil(len(records) / columns)
@@ -448,8 +481,9 @@ def plot_covariance_heatmap(
     configure_chinese_font()
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(max(8, len(selected_cols) * 0.4), 6))
-    im = ax.imshow(covariance, cmap="viridis", aspect="auto")
+    size = max(6.0, min(0.45 * len(selected_cols), 18.0))
+    fig, ax = plt.subplots(figsize=(size, size))
+    im = ax.imshow(covariance, cmap="viridis", aspect="equal")
     ax.set_xticks(np.arange(len(selected_cols)))
     ax.set_xticklabels(selected_cols, rotation=90)
     ax.set_yticks(np.arange(len(selected_cols)))
