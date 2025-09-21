@@ -7,7 +7,7 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -37,6 +37,7 @@ from src.analysis.feature_analysis import (
 from src.analysis.feature_dictionary import build_feature_dictionary
 from src.data_io.mat_loader import load_source_directory, load_target_directory
 from src.pipelines.build_feature_dataset import SegmentationConfig
+from src.feature_engineering.bearing import DEFAULT_BEARINGS
 
 LOGGER = logging.getLogger("feature_analysis")
 
@@ -76,11 +77,28 @@ def _resolve_label(summary, record) -> Optional[str]:
     return None
 
 
+def _resolve_bearing_map(channel_mapping: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    bearings: Dict[str, Any] = {}
+    if not channel_mapping:
+        return bearings
+    for channel, name in channel_mapping.items():
+        if name is None:
+            continue
+        spec = DEFAULT_BEARINGS.get(str(name))
+        if spec is None:
+            LOGGER.warning("未识别的轴承型号 %s (通道 %s)，将跳过故障频率标注", name, channel)
+            continue
+        bearings[str(channel).upper()] = spec
+    return bearings
+
+
 def _render_detail_plots(
     domain_prefix: str,
     records: Sequence[Tuple[Any, Any]],
     analysis_root: Path,
     signal_config: SignalPlotConfig,
+    bearing_map: Dict[str, Any],
+    verification_records: List[pd.DataFrame],
 ) -> None:
     for summary, record in records:
         file_id = _safe_identifier(getattr(summary, "file_id", None))
@@ -104,7 +122,31 @@ def _render_detail_plots(
             LOGGER.info("Saved %s window sequence plot to %s", domain_prefix, window_path)
 
         envelope_path = analysis_root / f"{base_name}_包络谱.png"
-        plot_envelope_spectrum(summary, record, envelope_path, signal_config, max_frequency=None)
+        channel_key = str(getattr(record, "channel", "")).upper()
+        bearing_spec = bearing_map.get(channel_key)
+        rpm = getattr(record, "rpm", None)
+        if rpm is None:
+            rpm = getattr(summary, "rpm", None)
+        try:
+            rpm_value = float(rpm) if rpm is not None else None
+        except Exception:
+            rpm_value = None
+        summary_df = plot_envelope_spectrum(
+            summary,
+            record,
+            envelope_path,
+            signal_config,
+            max_frequency=None,
+            bearing=bearing_spec,
+            rpm=rpm_value,
+        )
+        if summary_df is not None and not summary_df.empty:
+            summary_copy = summary_df.copy()
+            summary_copy["数据域"] = domain_prefix
+            summary_copy["文件"] = getattr(summary, "file_id", "")
+            summary_copy["通道"] = getattr(record, "channel", "")
+            summary_copy["转速(rpm)"] = rpm_value
+            verification_records.append(summary_copy)
         if envelope_path.exists():
             LOGGER.info("Saved %s envelope spectrum to %s", domain_prefix, envelope_path)
 
@@ -164,7 +206,11 @@ def analyse_features(
     config = _load_yaml(config_path)
     outputs = config.get("outputs", {})
 
-    feature_root = output_dir or Path(outputs.get("directory", "artifacts"))
+    source_bearings = _resolve_bearing_map(config.get("source", {}).get("channel_bearings"))
+    target_bearings = _resolve_bearing_map(config.get("target", {}).get("channel_bearings"))
+    verification_records: List[pd.DataFrame] = []
+
+    feature_root = output_dir or Path(outputs.get("directory", "artifacts/task1"))
     feature_root.mkdir(parents=True, exist_ok=True)
 
     analysis_root = analysis_dir or (feature_root / "analysis")
@@ -254,7 +300,14 @@ def analyse_features(
             if grid_path.exists():
                 LOGGER.info("Saved target time-series overview to %s", grid_path)
             if target_records:
-                _render_detail_plots("target", target_records, analysis_root, signal_config)
+                _render_detail_plots(
+                    "target",
+                    target_records,
+                    analysis_root,
+                    signal_config,
+                    target_bearings,
+                    verification_records,
+                )
             else:
                 LOGGER.warning("No target signal records available for detailed plots")
         else:
@@ -280,11 +333,37 @@ def analyse_features(
             if grid_path.exists():
                 LOGGER.info("Saved source time-series overview to %s", grid_path)
             if source_records:
-                _render_detail_plots("source", source_records, analysis_root, signal_config)
+                _render_detail_plots(
+                    "source",
+                    source_records,
+                    analysis_root,
+                    signal_config,
+                    source_bearings,
+                    verification_records,
+                )
             else:
                 LOGGER.warning("No source signal records available for detailed plots")
         else:
             LOGGER.warning("No source signals found for time-series visualisation")
+
+    if verification_records:
+        verification_df = pd.concat(verification_records, ignore_index=True)
+        rename_map = {
+            "fault": "特征频率类型",
+            "predicted_frequency": "理论频率(Hz)",
+            "peak_frequency": "实测峰值频率(Hz)",
+            "predicted_amplitude": "理论频率幅值",
+            "peak_amplitude": "峰值幅值",
+            "frequency_error": "频率误差(Hz)",
+            "数据域": "数据域",
+            "文件": "文件编号",
+            "通道": "通道",
+            "转速(rpm)": "转速(rpm)",
+        }
+        verification_df = verification_df.rename(columns=rename_map)
+        verification_path = analysis_root / "故障特征频率验证.csv"
+        LOGGER.info("Writing fault frequency verification table to %s", verification_path)
+        _save_dataframe_chinese(verification_df, verification_path)
 
 
 

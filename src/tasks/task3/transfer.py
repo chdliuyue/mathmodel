@@ -149,8 +149,10 @@ def _predict_with_pipeline(
 ) -> pd.DataFrame:
     X = frame[feature_columns].astype(float)
     metadata = _select_metadata(frame, metadata_columns)
+    metadata = metadata.reset_index(drop=True)
     predicted = pipeline.predict(X)
     result = metadata.copy()
+    result["row_index"] = frame.index.to_numpy()
     result["predicted_label"] = predicted
     classifier = pipeline.named_steps.get("classifier")
     if classifier is not None and hasattr(classifier, "predict_proba"):
@@ -258,30 +260,32 @@ def run_transfer_learning(
     target_matrix = augmented_target[feature_columns].astype(float)
     _set_target_statistics(base_result.pipeline, target_matrix)
 
-    combined_before = pd.concat(
-        [
-            augmented_source[feature_columns + ["dataset"]],
-            augmented_target[feature_columns + ["dataset"]],
-        ],
-        ignore_index=True,
-    )
-    alignment_before = compute_domain_alignment_metrics(combined_before)
-
-    aligned_source = _transform_aligned(base_result.pipeline, augmented_source[feature_columns].astype(float))
-    aligned_target = _transform_aligned(base_result.pipeline, target_matrix)
-    aligned_source_df = pd.DataFrame(aligned_source, columns=feature_columns)
-    aligned_source_df["dataset"] = "source_aligned"
-    aligned_target_df = pd.DataFrame(aligned_target, columns=feature_columns)
-    aligned_target_df["dataset"] = "target_aligned"
-    combined_aligned = pd.concat([aligned_source_df, aligned_target_df], ignore_index=True)
-    alignment_after = compute_domain_alignment_metrics(combined_aligned)
-
     initial_predictions = _predict_with_pipeline(
         base_result.pipeline,
         augmented_target,
         feature_columns,
         config.metadata_columns,
     )
+
+    label_column = config.diagnosis.label_column
+    source_visual = augmented_source[feature_columns].reset_index(drop=True)
+    source_labels = augmented_source.get(label_column)
+    if source_labels is not None:
+        visual_labels = source_labels.fillna("未标注").astype(str)
+    else:
+        visual_labels = pd.Series(["未标注"] * len(source_visual))
+    source_visual["dataset"] = "source"
+    source_visual["label"] = visual_labels.values
+
+    target_visual_base = augmented_target[feature_columns].reset_index(drop=True)
+    target_visual_base["dataset"] = "target"
+    initial_labels = initial_predictions.get("predicted_label", pd.Series(["未知"] * len(target_visual_base)))
+    initial_labels = initial_labels.astype(str)
+    target_visual_before = target_visual_base.copy()
+    target_visual_before["label"] = [f"预测(初始):{label}" for label in initial_labels]
+
+    combined_before = pd.concat([source_visual, target_visual_before], ignore_index=True)
+    alignment_before = compute_domain_alignment_metrics(combined_before)
 
     final_pipeline = base_result.pipeline
     pseudo_labels = pd.DataFrame()
@@ -306,12 +310,19 @@ def run_transfer_learning(
         config.metadata_columns,
     )
 
+    final_labels = final_predictions.get("predicted_label", pd.Series(["未知"] * len(target_visual_base)))
+    final_labels = final_labels.astype(str)
+    target_visual_after = target_visual_base.copy()
+    target_visual_after["label"] = [f"预测(对齐):{label}" for label in final_labels]
+
     final_aligned_source = _transform_aligned(final_pipeline, augmented_source[feature_columns].astype(float))
     final_aligned_target = _transform_aligned(final_pipeline, target_matrix)
     final_source_df = pd.DataFrame(final_aligned_source, columns=feature_columns)
     final_source_df["dataset"] = "source_aligned"
+    final_source_df["label"] = source_visual["label"].values
     final_target_df = pd.DataFrame(final_aligned_target, columns=feature_columns)
     final_target_df["dataset"] = "target_aligned"
+    final_target_df["label"] = target_visual_after["label"].values
     combined_aligned = pd.concat([final_source_df, final_target_df], ignore_index=True)
     alignment_after = compute_domain_alignment_metrics(combined_aligned)
 

@@ -53,9 +53,15 @@ class FeatureExtractor:
 
         if self.config.include_fault_bands and rpm is not None and bearing is not None:
             bands = bearing.fault_frequency_bands(rpm, bandwidth=self.config.fault_bandwidth)
+            freq_values = {f"{name}_frequency": float(value) for name, value in bearing.fault_frequencies(rpm).items()}
+            features.update(_prefix(freq_values, "fault_"))
             features.update(_prefix(fault_frequency_band_features(signal, sampling_rate, bands), "fault_"))
         else:
             defaults = {
+                "fault_ftf_frequency": 0.0,
+                "fault_bpfo_frequency": 0.0,
+                "fault_bpfi_frequency": 0.0,
+                "fault_bsf_frequency": 0.0,
                 "fault_ftf_band_energy": 0.0,
                 "fault_bpfo_band_energy": 0.0,
                 "fault_bpfi_band_energy": 0.0,

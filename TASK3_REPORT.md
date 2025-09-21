@@ -62,9 +62,13 @@ python scripts/run_task3_transfer.py \
 - `target_predictions_initial.csv` / `target_predictions.csv`：目标域段级预测与概率，前者为伪标签前，后者为伪标签后的最终结果。
 - `pseudo_labels.csv`、`pseudo_history.csv`：伪标签详情及各轮统计。
 - `alignment_before.csv`、`alignment_after.csv`：域对齐指标；配套 `tsne_before.png`、`tsne_after.png`。
+- t-SNE 可视化的右侧子图使用“源域真实标签 + 目标域预测标签”着色，可直观比较伪标签前后的分类边界变化。
 - `combined_features_before/aligned.csv`：对齐前后的特征矩阵（含 `dataset` 列），方便后续分析。
 - `transfer_model.joblib`：最终迁移模型，可供任务4加载解释。
 - `metrics.json`：汇总了源域训练指标、伪标签规模、特征数量等关键信息。
+- `伪标签演化曲线.png`：展示每轮新增伪标签数量及累计规模，便于评估自训练收敛情况。
+- `多模态特征分布对比.png`：对比源/目标域关键 `tf_*` 特征的均值与标准差，直观观察多模态特征的迁移效果。
+- `多模态时频示例.png`：基于置信度最高的目标样本绘制时域波形、STFT 与 CWT 图像，保留中文标签用于报告展示。
 
 ## 5. 结果解读建议
 

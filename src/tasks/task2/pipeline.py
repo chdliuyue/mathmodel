@@ -1,18 +1,24 @@
 """Orchestration helpers for task 2 source-domain modelling."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import json
 import logging
 
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.metrics import accuracy_score, f1_score
+from sklearn.pipeline import Pipeline
+from sklearn.svm import SVC
 
 from ...modeling import (
     AlignmentConfig,
+    CoralAligner,
     CrossValidationConfig,
     LogisticModelConfig,
     PermutationImportanceConfig,
@@ -36,6 +42,7 @@ class Task2Config:
     cross_validation: CrossValidationConfig
     permutation: PermutationImportanceConfig
     outputs: Dict[str, Any]
+    benchmark_models: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _parse_split_config(config: Optional[Dict[str, Any]]) -> TrainTestSplitConfig:
@@ -63,12 +70,17 @@ def _parse_model_config(config: Optional[Dict[str, Any]]) -> LogisticModelConfig
     class_weight = config.get("class_weight")
     if class_weight is not None:
         class_weight = str(class_weight)
+    multi_class = config.get("multi_class")
+    if multi_class is not None:
+        multi_class = str(multi_class)
+        if multi_class.lower() == "auto":
+            multi_class = None
     return LogisticModelConfig(
         penalty=str(config.get("penalty", "l2")),
         C=float(config.get("C", 1.0)),
         solver=str(config.get("solver", "lbfgs")),
         max_iter=int(config.get("max_iter", 400)),
-        multi_class=str(config.get("multi_class", "auto")),
+        multi_class=multi_class,
         class_weight=class_weight,
     )
 
@@ -106,6 +118,7 @@ def resolve_task2_config(raw_config: Dict[str, Any]) -> Task2Config:
     interpretability_config = raw_config.get("interpretability", {}) or {}
     permutation = _parse_permutation_config(interpretability_config.get("permutation_importance"))
     outputs = raw_config.get("outputs", {})
+    benchmarks = raw_config.get("benchmarks", []) or []
     return Task2Config(
         features_config=features_config,
         alignment=alignment,
@@ -114,12 +127,112 @@ def resolve_task2_config(raw_config: Dict[str, Any]) -> Task2Config:
         cross_validation=cross_validation,
         permutation=permutation,
         outputs=outputs,
+        benchmark_models=benchmarks,
     )
 
 
 def _ensure_directory(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _build_benchmark_estimator(spec: Dict[str, Any], random_state: int):
+    model_type = str(spec.get("type", "")).lower()
+    params = dict(spec.get("params", {}) or {})
+    if model_type == "random_forest":
+        params.setdefault("n_estimators", 300)
+        params.setdefault("random_state", random_state)
+        return RandomForestClassifier(**params)
+    if model_type == "gradient_boosting":
+        params.setdefault("random_state", random_state)
+        return GradientBoostingClassifier(**params)
+    if model_type in {"svc", "svm"}:
+        params.setdefault("probability", True)
+        params.setdefault("random_state", random_state)
+        return SVC(**params)
+    raise ValueError(f"Unsupported benchmark model type: {model_type}")
+
+
+def _evaluate_benchmarks(
+    result: TrainingResult,
+    feature_table: pd.DataFrame,
+    config: Task2Config,
+    output_dir: Path,
+) -> None:
+    if not config.benchmark_models:
+        return
+
+    label_column = str(config.features_config.get("label_column", "label"))
+    if label_column not in feature_table.columns:
+        LOGGER.warning("Label column %s missing; skipping benchmark comparison", label_column)
+        return
+
+    labelled = feature_table.dropna(subset=[label_column])
+    if labelled.empty:
+        LOGGER.warning("No labelled samples available for benchmark comparison")
+        return
+
+    try:
+        train_frame = labelled.loc[result.train_indices]
+        test_frame = labelled.loc[result.test_indices]
+    except KeyError as exc:
+        LOGGER.warning("Failed to align benchmark splits with training result: %s", exc)
+        return
+
+    feature_columns = result.feature_columns
+    metrics_records: List[Dict[str, Any]] = []
+
+    for spec in config.benchmark_models:
+        name = str(spec.get("name") or spec.get("type") or "模型")
+        try:
+            estimator = _build_benchmark_estimator(spec, random_state=config.split.random_state)
+        except Exception as exc:
+            LOGGER.warning("跳过模型 %s：%s", name, exc)
+            continue
+
+        pipeline = clone(result.pipeline)
+        try:
+            pipeline.set_params(classifier=estimator)
+        except ValueError:
+            pipeline = Pipeline(
+                [
+                    ("imputer", pipeline.named_steps.get("imputer")),
+                    ("aligner", pipeline.named_steps.get("aligner", CoralAligner())),
+                    ("scaler", pipeline.named_steps.get("scaler")),
+                    ("classifier", estimator),
+                ]
+            )
+
+        try:
+            pipeline.fit(train_frame[feature_columns], train_frame[label_column].astype(str))
+            y_train_pred = pipeline.predict(train_frame[feature_columns])
+            y_test_pred = pipeline.predict(test_frame[feature_columns])
+        except Exception as exc:
+            LOGGER.warning("模型 %s 训练失败：%s", name, exc)
+            continue
+
+        train_acc = accuracy_score(train_frame[label_column], y_train_pred)
+        test_acc = accuracy_score(test_frame[label_column], y_test_pred)
+        macro_f1 = f1_score(test_frame[label_column], y_test_pred, average="macro")
+
+        params_repr = json.dumps(spec.get("params", {}), ensure_ascii=False)
+        metrics_records.append(
+            {
+                "模型": name,
+                "训练准确率": float(train_acc),
+                "测试准确率": float(test_acc),
+                "测试宏平均F1": float(macro_f1),
+                "超参数": params_repr,
+            }
+        )
+
+    if not metrics_records:
+        return
+
+    comparison = pd.DataFrame(metrics_records).sort_values("测试准确率", ascending=False)
+    comparison_path = output_dir / config.outputs.get("model_comparison", "model_comparison.csv")
+    comparison.to_csv(comparison_path, index=False, encoding="utf-8-sig")
+    LOGGER.info("Benchmark comparison written to %s", comparison_path)
 
 
 def _write_outputs(
@@ -185,7 +298,7 @@ def run_training(
 ) -> Optional[TrainingResult]:
     config = resolve_task2_config(raw_config)
 
-    table_path = Path(config.features_config.get("table_path", "artifacts/source_features.csv"))
+    table_path = Path(config.features_config.get("table_path", "artifacts/task1/source_features.csv"))
     if feature_table_override is not None:
         table_path = feature_table_override
 
@@ -219,6 +332,7 @@ def run_training(
     output_root = output_dir_override or Path(outputs_config.get("directory", "artifacts/task2"))
     _ensure_directory(output_root)
     _write_outputs(result, output_root, outputs_config, feature_table)
+    _evaluate_benchmarks(result, feature_table, config, output_root)
 
     LOGGER.info("Training complete. Metrics saved to %s", output_root)
     return result

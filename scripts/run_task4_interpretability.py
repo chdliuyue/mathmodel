@@ -48,8 +48,8 @@ def _write_dataframe(frame: pd.DataFrame, path: Path) -> None:
 
 def _load_features(config: Dict[str, Any], source_override: Optional[Path], target_override: Optional[Path]) -> tuple[pd.DataFrame, pd.DataFrame]:
     features_cfg = config.get("features", {})
-    source_path = Path(features_cfg.get("source_table", "artifacts/source_features.csv"))
-    target_path = Path(features_cfg.get("target_table", "artifacts/target_features.csv"))
+    source_path = Path(features_cfg.get("source_table", "artifacts/task1/source_features.csv"))
+    target_path = Path(features_cfg.get("target_table", "artifacts/task1/target_features.csv"))
     if source_override is not None:
         source_path = source_override
     if target_override is not None:

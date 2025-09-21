@@ -45,7 +45,7 @@ target:
     fault_bandwidth: 5.0
 
 outputs:
-  directory: artifacts
+  directory: artifacts/task1
   source_feature_table: source_features.csv
   source_metadata: source_selection.csv
   target_feature_table: target_features.csv

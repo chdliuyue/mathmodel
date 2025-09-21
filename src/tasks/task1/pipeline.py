@@ -73,7 +73,7 @@ def run_feature_pipeline(config: Mapping[str, Any], output_dir: Optional[Path] =
     """Execute the end-to-end extraction workflow used in task 1."""
 
     outputs_cfg = config.get("outputs", {}) if isinstance(config, Mapping) else {}
-    output_root = output_dir or Path(outputs_cfg.get("directory", "artifacts"))
+    output_root = output_dir or Path(outputs_cfg.get("directory", "artifacts/task1"))
     _ensure_directory(output_root)
 
     source_features = pd.DataFrame()
