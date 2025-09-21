@@ -99,9 +99,9 @@ def run_pipeline(config_path: Path, output_dir: Optional[Path] = None) -> None:
         metadata_path = output_root / outputs.get("source_metadata", "source_metadata.csv")
         if not source_features.empty:
             LOGGER.info("Writing %s", feature_path)
-            source_features.to_csv(feature_path, index=False)
+            source_features.to_csv(feature_path, index=False, encoding="utf-8-sig")
             LOGGER.info("Writing %s", metadata_path)
-            source_metadata.to_csv(metadata_path, index=False)
+            source_metadata.to_csv(metadata_path, index=False, encoding="utf-8-sig")
         else:
             LOGGER.warning("No source features were extracted; check whether the dataset is available.")
 
@@ -130,9 +130,9 @@ def run_pipeline(config_path: Path, output_dir: Optional[Path] = None) -> None:
         metadata_path = output_root / outputs.get("target_metadata", "target_metadata.csv")
         if not target_features.empty:
             LOGGER.info("Writing %s", feature_path)
-            target_features.to_csv(feature_path, index=False)
+            target_features.to_csv(feature_path, index=False, encoding="utf-8-sig")
             LOGGER.info("Writing %s", metadata_path)
-            target_metadata.to_csv(metadata_path, index=False)
+            target_metadata.to_csv(metadata_path, index=False, encoding="utf-8-sig")
         else:
             LOGGER.warning("No target features were extracted; verify the target dataset path.")
 

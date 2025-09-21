@@ -43,7 +43,7 @@ pip install -r requirements.txt
    - 频域特征（谱质心、谱熵、主频、带宽等）；
    - 希尔伯特包络谱特征；
    - 基于轴承几何参数（SKF6205/6203）计算 BPFO、BPFI、BSF、FTF 等特征频率，并提取 ±5 Hz 带宽内的能量与能量占比。
-4. **结果保存**：按源域 / 目标域分别输出特征表（`*_features.csv`）及筛选元数据（`*_metadata.csv`）。所有路径可在配置文件中修改。
+4. **结果保存**：按源域 / 目标域分别输出特征表（`*_features.csv`）及筛选元数据（`*_metadata.csv`）。所有 CSV 均以 `UTF-8-SIG` 编码写出，方便在中文环境中直接查看。
 
 运行示例：
 
@@ -71,11 +71,15 @@ python scripts/extract_features.py --config config/dataset_config.yaml
 python scripts/analyze_features.py --config config/dataset_config.yaml --max-records 6 --preview-seconds 3
 ```
 
-脚本会在 `artifacts/analysis/`（或通过 `--analysis-dir` 指定的目录）下生成：
+脚本会在 `artifacts/analysis/`（或通过 `--analysis-dir` 指定的目录）下生成内容全面的中文可视化/报表：
 
-- `feature_statistics.csv`：对全部特征列计算均值、标准差、方差、最大值、最小值；
-- `tsne_embedding.png` / `umap_embedding.png`：源域与目标域特征的低维嵌入图；
-- `target_time_series_overview.png` 与 `target_*_diagnostics.png`（若源域可用则另含 `source_*` 图）：展示时域波形、分段位置与谱图。
+- `特征统计汇总.csv`：对全部特征列计算均值、标准差、方差、最大值、最小值，并提供中文列名；
+- `特征整合表.csv`：融合源域/目标域特征，统一字段命名以便后续任务直接调用；
+- `域对齐指标.csv`：输出 MMD、CORAL 等分布一致性指标，评估源目标域差异；
+- `特征重要度.png` 与 `特征重要度.csv`：基于随机森林的特征重要度排行；
+- `特征协方差热图.png`：展示主要特征之间的协方差关系；
+- `tsne_embedding.png` / `umap_embedding.png`：源域与目标域特征的低维嵌入图（中文标题与刻度）；
+- `target_time_series_overview.png` 与 `target_*`/`source_*` 诊断图：新版时序网格对齐示例图、时频谱图、窗序折线、包络谱、时频显著性热图等多视角信号分析图。
 
 关于任务1数据字典、字段解释及处理流程的完整说明，详见新增文档 [`TASK1_REPORT.md`](TASK1_REPORT.md)。
 
