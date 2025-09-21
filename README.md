@@ -81,6 +81,8 @@ python scripts/extract_features.py --config config/dataset_config.yaml
 python scripts/analyze_features.py --config config/dataset_config.yaml --max-records 6 --preview-seconds 3
 ```
 
+上述示例命令中，`--max-records 6` 表示在源域/目标域的时序网格图中最多展示 6 条信号；`--preview-seconds 3` 则指定每条信号在时域预览图中截取 3 秒的数据窗口，便于放大关键细节。
+
 脚本会在 `artifacts/analysis/`（或通过 `--analysis-dir` 指定的目录）下生成内容全面的中文可视化/报表：
 
 - `特征统计汇总.csv`：对全部特征列计算均值、标准差、方差、最大值、最小值，并提供中文列名；

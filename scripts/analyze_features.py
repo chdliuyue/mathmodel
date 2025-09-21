@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import pandas as pd
 import yaml
 
 # Ensure the project root is on the import path when running as a script.
