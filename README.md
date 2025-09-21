@@ -13,7 +13,7 @@
 2. 结合轴承故障机理提取时域、频域、包络谱以及特征频带能量等特征；
 3. 对源域和目标域信号统一输出可用于后续建模的结构化特征表。
 
-由于题目给出的源域数据体量较大未上传到仓库，代码在设计时兼顾了“数据缺失时不中断”的需求。一旦在本地补充 `sourceData/` 目录即可直接运行完整流程。对于目标域，本仓库已包含 `targetData/` 下的 16 个 8 秒信号，可立即验证特征提取效果。
+目前仓库已经随附了完整的源域 `sourceData/`（Case Western 台架）与目标域 `targetData/`（竞赛提供的 16 条 8 秒信号）。若需要裁剪或替换数据，也可直接在 `config/dataset_config.yaml` 中调整筛选参数，流程会自动适配。
 
 ## 目录结构概览
 
@@ -61,9 +61,9 @@ python scripts/extract_features.py --config config/dataset_config.yaml
 
 运行后，`artifacts/` 目录将包含：
 
-- `target_features.csv`：目标域分段特征（已可生成，因为目标域数据随仓库提供）；
-- `target_metadata.csv`：目标域原始文件的概要信息；
-- 若在本地放置了 `sourceData/` 并保持结构与 Case Western 数据集一致，还会额外生成 `source_features.csv` 与 `source_selection.csv`。
+- `source_features.csv` / `source_selection.csv`：源域筛选与特征表；
+- `target_features.csv` / `target_metadata.csv`：目标域分段特征与元数据；
+- 若通过命令行覆盖了输出路径，也会在对应目录生成同名文件。
 
 ## 代码要点
 
@@ -157,8 +157,7 @@ python scripts/run_task4_interpretability.py --config config/task4_config.yaml
 
 ## 下一步建议
 
-- 对源域特征运行可视化（t-SNE/UMAP）以评估类别可分性，并与目标域特征对比；
-- 在任务2已有模型基础上进一步探索多源数据/多模型集成，为任务3 的跨域迁移奠定基础；
-- 探索统计对齐或对抗迁移等策略，将源域知识迁移至目标域，完成任务3；
-- 针对迁移模型输出进一步构建可解释性分析（任务4）。
+- 在现有全流程基础上引入更多轴承类型或不同采样率的数据，验证筛选策略与特征体系的泛化能力；
+- 针对任务3 的迁移模型增加在线伪标签更新与概念漂移监控，提升长期部署的稳定性；
+- 将任务4 输出的多粒度解释结果整合成交互式仪表盘，便于专家进行快速诊断与回溯。
 

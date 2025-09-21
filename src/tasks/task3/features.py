@@ -13,6 +13,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 EPS = 1e-12
+_RICKER_FALLBACK_WARNED = False
+_CWT_UNAVAILABLE_WARNED = False
 
 
 @dataclass
@@ -116,10 +118,29 @@ def compute_stft_features(signal_array: np.ndarray, sampling_rate: float, config
     }
 
 
+def _ricker_fallback(points: int, scale: float) -> np.ndarray:
+    if scale <= 0:
+        raise ValueError("Scale parameter for the Ricker wavelet must be positive")
+    points = int(points)
+    if points <= 0:
+        return np.zeros(0, dtype=float)
+    half_width = (points - 1) / 2.0
+    x = np.linspace(-half_width, half_width, points)
+    xsq = (x / scale) ** 2
+    prefactor = 2.0 / (np.sqrt(3.0 * scale) * (np.pi ** 0.25))
+    return prefactor * (1 - xsq) * np.exp(-xsq / 2.0)
+
+
 def _cwt_wavelet(wavelet: str):
     wavelet_lower = wavelet.lower()
     if wavelet_lower == "ricker":
-        return signal.ricker
+        if hasattr(signal, "ricker"):
+            return signal.ricker
+        global _RICKER_FALLBACK_WARNED
+        if not _RICKER_FALLBACK_WARNED:
+            LOGGER.warning("scipy.signal.ricker unavailable; using analytical fallback implementation.")
+            _RICKER_FALLBACK_WARNED = True
+        return _ricker_fallback
     if wavelet_lower in {"morlet", "morlet2"}:
         return lambda points, scale: signal.morlet2(points, s=scale, w=6.0)
     raise ValueError(f"Unsupported wavelet type: {wavelet}")
@@ -129,6 +150,22 @@ def compute_cwt_features(signal_array: np.ndarray, sampling_rate: float, config:
     """Return descriptive features derived from the CWT scalogram."""
 
     if config.cwt_num_scales <= 1 or config.cwt_max_scale <= config.cwt_min_scale:
+        return {key: 0.0 for key in (
+            "tf_cwt_total_energy",
+            "tf_cwt_entropy",
+            "tf_cwt_scale_mean",
+            "tf_cwt_scale_std",
+            "tf_cwt_scale_skew",
+            "tf_cwt_scale_kurt",
+            "tf_cwt_max_scale",
+            "tf_cwt_ridge_energy",
+        )}
+
+    if not hasattr(signal, "cwt"):
+        global _CWT_UNAVAILABLE_WARNED
+        if not _CWT_UNAVAILABLE_WARNED:
+            LOGGER.warning("scipy.signal.cwt unavailable; skipping CWT-based features.")
+            _CWT_UNAVAILABLE_WARNED = True
         return {key: 0.0 for key in (
             "tf_cwt_total_energy",
             "tf_cwt_entropy",

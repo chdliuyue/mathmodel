@@ -1,6 +1,7 @@
 """High level helpers for feature table analysis and visualisation."""
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -305,13 +306,67 @@ def _prepare_signal_preview(signal: np.ndarray, sampling_rate: float, preview_se
     return signal[: min(samples, signal.size)]
 
 
+def _infer_record_label(summary, record) -> str:
+    label = getattr(record, "label", None)
+    if label is not None and pd.notna(label):
+        return str(label)
+    info = getattr(summary, "label_info", None)
+    if info is not None:
+        info_label = getattr(info, "label", None)
+        if info_label is not None and pd.notna(info_label):
+            return str(info_label)
+    return "unlabelled"
+
+
+def _prioritise_label_diversity(records: Sequence[Tuple]) -> List[Tuple]:
+    if not records:
+        return []
+    label_groups: defaultdict[str, deque] = defaultdict(deque)
+    for summary, record in records:
+        label = _infer_record_label(summary, record)
+        label_groups[label].append((summary, record))
+    if len(label_groups) <= 1:
+        return list(records)
+    labels = sorted(label_groups.keys())
+    diversified: List[Tuple] = []
+    seen_pairs: set[Tuple[str, str]] = set()
+
+    while len(diversified) < len(records):
+        progressed = False
+        for label in labels:
+            if not label_groups[label]:
+                continue
+            summary, record = label_groups[label].popleft()
+            key = (getattr(summary, "file_id", ""), getattr(record, "channel", ""))
+            if key in seen_pairs:
+                continue
+            diversified.append((summary, record))
+            seen_pairs.add(key)
+            progressed = True
+            if len(diversified) >= len(records):
+                break
+        if not progressed:
+            break
+
+    for label in labels:
+        while label_groups[label]:
+            summary, record = label_groups[label].popleft()
+            key = (getattr(summary, "file_id", ""), getattr(record, "channel", ""))
+            if key in seen_pairs:
+                continue
+            diversified.append((summary, record))
+            seen_pairs.add(key)
+
+    return diversified
+
+
 def plot_time_series_grid(
     summaries: Sequence,
     output_path: Path,
     config: SignalPlotConfig,
     max_records: int = 4,
     columns: int = 2,
-) -> None:
+) -> List[Tuple]:
     """Plot raw time-series signals for quick visual inspection."""
 
     configure_chinese_font()
@@ -319,7 +374,7 @@ def plot_time_series_grid(
 
     if not summaries:
         LOGGER.warning("No summaries provided for time-series grid plot")
-        return
+        return []
 
     records: List = []
     for summary in summaries:
@@ -327,7 +382,7 @@ def plot_time_series_grid(
             records.append((summary, record))
     if not records:
         LOGGER.warning("Summaries did not contain any signal records")
-        return
+        return []
 
     # Prioritise diversity by keeping the first occurrence of each file before truncation.
     diverse_records: List[Tuple] = []
@@ -341,6 +396,7 @@ def plot_time_series_grid(
             diverse_records.append(item)
 
     records = diverse_records
+    records = _prioritise_label_diversity(records)
     if len(records) > max_records:
         candidate_indices = sorted(set(np.linspace(0, len(records) - 1, num=max_records, dtype=int)))
         selected: List[Tuple] = []
@@ -406,6 +462,8 @@ def plot_time_series_grid(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
+
+    return records
 
 
 def plot_signal_diagnostics(
