@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
+import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import yaml
 
@@ -37,6 +39,79 @@ from src.data_io.mat_loader import load_source_directory, load_target_directory
 from src.pipelines.build_feature_dataset import SegmentationConfig
 
 LOGGER = logging.getLogger("feature_analysis")
+
+
+def _safe_identifier(value: Optional[str]) -> str:
+    if value is None:
+        return "unknown"
+    text = str(value)
+    cleaned = re.sub(r"[^0-9A-Za-z_\-]+", "_", text)
+    return cleaned or "unknown"
+
+
+def _resolve_label(summary, record) -> Optional[str]:
+    def _normalise(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            if math.isnan(value):  # type: ignore[arg-type]
+                return None
+        except (TypeError, ValueError):
+            pass
+        if isinstance(value, bool):
+            text = "true" if value else "false"
+        else:
+            text = str(value)
+        text = text.strip()
+        return text if text else None
+
+    label = _normalise(getattr(record, "label", None))
+    if label is not None:
+        return label
+    info = getattr(summary, "label_info", None)
+    if info is not None:
+        info_label = _normalise(getattr(info, "label", None))
+        if info_label is not None:
+            return info_label
+    return None
+
+
+def _render_detail_plots(
+    domain_prefix: str,
+    records: Sequence[Tuple[Any, Any]],
+    analysis_root: Path,
+    signal_config: SignalPlotConfig,
+) -> None:
+    for summary, record in records:
+        file_id = _safe_identifier(getattr(summary, "file_id", None))
+        channel = _safe_identifier(getattr(record, "channel", None))
+        label_text = _resolve_label(summary, record)
+        label_part = _safe_identifier(label_text) if label_text else None
+        name_parts = [domain_prefix]
+        if label_part and label_part != "unknown":
+            name_parts.append(label_part)
+        name_parts.extend([file_id, channel])
+        base_name = "_".join(part for part in name_parts if part)
+
+        diag_path = analysis_root / f"{base_name}_diagnostics.png"
+        plot_signal_diagnostics(summary, record, diag_path, signal_config)
+        if diag_path.exists():
+            LOGGER.info("Saved %s diagnostic plot to %s", domain_prefix, diag_path)
+
+        window_path = analysis_root / f"{base_name}_窗序折线.png"
+        plot_window_sequence(summary, record, window_path, signal_config)
+        if window_path.exists():
+            LOGGER.info("Saved %s window sequence plot to %s", domain_prefix, window_path)
+
+        envelope_path = analysis_root / f"{base_name}_包络谱.png"
+        plot_envelope_spectrum(summary, record, envelope_path, signal_config, max_frequency=None)
+        if envelope_path.exists():
+            LOGGER.info("Saved %s envelope spectrum to %s", domain_prefix, envelope_path)
+
+        saliency_path = analysis_root / f"{base_name}_时频显著性.png"
+        plot_time_frequency_saliency(summary, record, saliency_path, signal_config)
+        if saliency_path.exists():
+            LOGGER.info("Saved %s time-frequency saliency heatmap to %s", domain_prefix, saliency_path)
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -169,32 +244,19 @@ def analyse_features(
         target_summaries = _load_target_summaries(target_config)
         if target_summaries:
             grid_path = analysis_root / "target_time_series_overview.png"
-            plot_time_series_grid(target_summaries, grid_path, signal_config, max_records=max_records, columns=2)
+            target_records = plot_time_series_grid(
+                target_summaries,
+                grid_path,
+                signal_config,
+                max_records=max_records,
+                columns=2,
+            )
             if grid_path.exists():
                 LOGGER.info("Saved target time-series overview to %s", grid_path)
-
-            first_summary = next((summary for summary in target_summaries if summary.records), None)
-            if first_summary is not None:
-                first_record = first_summary.records[0]
-                diag_path = analysis_root / f"target_{first_summary.file_id}_diagnostics.png"
-                plot_signal_diagnostics(first_summary, first_record, diag_path, signal_config)
-                if diag_path.exists():
-                    LOGGER.info("Saved target diagnostic plot to %s", diag_path)
-
-                window_path = analysis_root / f"target_{first_summary.file_id}_窗序折线.png"
-                plot_window_sequence(first_summary, first_record, window_path, signal_config)
-                if window_path.exists():
-                    LOGGER.info("Saved window sequence plot to %s", window_path)
-
-                envelope_path = analysis_root / f"target_{first_summary.file_id}_包络谱.png"
-                plot_envelope_spectrum(first_summary, first_record, envelope_path, signal_config, max_frequency=None)
-                if envelope_path.exists():
-                    LOGGER.info("Saved envelope spectrum to %s", envelope_path)
-
-                saliency_path = analysis_root / f"target_{first_summary.file_id}_时频显著性.png"
-                plot_time_frequency_saliency(first_summary, first_record, saliency_path, signal_config)
-                if saliency_path.exists():
-                    LOGGER.info("Saved time-frequency saliency heatmap to %s", saliency_path)
+            if target_records:
+                _render_detail_plots("target", target_records, analysis_root, signal_config)
+            else:
+                LOGGER.warning("No target signal records available for detailed plots")
         else:
             LOGGER.warning("No target signals found for time-series visualisation")
 
@@ -208,32 +270,19 @@ def analyse_features(
         source_summaries = _load_source_summaries(source_config)
         if source_summaries:
             grid_path = analysis_root / "source_time_series_overview.png"
-            plot_time_series_grid(source_summaries, grid_path, signal_config, max_records=max_records, columns=2)
+            source_records = plot_time_series_grid(
+                source_summaries,
+                grid_path,
+                signal_config,
+                max_records=max_records,
+                columns=2,
+            )
             if grid_path.exists():
                 LOGGER.info("Saved source time-series overview to %s", grid_path)
-
-            first_summary = next((summary for summary in source_summaries if summary.records), None)
-            if first_summary is not None:
-                first_record = first_summary.records[0]
-                diag_path = analysis_root / f"source_{first_summary.file_id}_diagnostics.png"
-                plot_signal_diagnostics(first_summary, first_record, diag_path, signal_config)
-                if diag_path.exists():
-                    LOGGER.info("Saved source diagnostic plot to %s", diag_path)
-
-                window_path = analysis_root / f"source_{first_summary.file_id}_窗序折线.png"
-                plot_window_sequence(first_summary, first_record, window_path, signal_config)
-                if window_path.exists():
-                    LOGGER.info("Saved source window sequence plot to %s", window_path)
-
-                envelope_path = analysis_root / f"source_{first_summary.file_id}_包络谱.png"
-                plot_envelope_spectrum(first_summary, first_record, envelope_path, signal_config, max_frequency=None)
-                if envelope_path.exists():
-                    LOGGER.info("Saved source envelope spectrum to %s", envelope_path)
-
-                saliency_path = analysis_root / f"source_{first_summary.file_id}_时频显著性.png"
-                plot_time_frequency_saliency(first_summary, first_record, saliency_path, signal_config)
-                if saliency_path.exists():
-                    LOGGER.info("Saved source time-frequency saliency heatmap to %s", saliency_path)
+            if source_records:
+                _render_detail_plots("source", source_records, analysis_root, signal_config)
+            else:
+                LOGGER.warning("No source signal records available for detailed plots")
         else:
             LOGGER.warning("No source signals found for time-series visualisation")
 

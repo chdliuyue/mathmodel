@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 from scipy import linalg
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -162,8 +161,13 @@ class CoralAligner(BaseEstimator, TransformerMixin):
         n_samples = max(X_array.shape[0] - 1, 1)
         covariance = centered.T @ centered / n_samples
         covariance += self.epsilon * np.eye(self.n_features_in_)
-        self.source_covariance_ = covariance
-        self.whitening_ = linalg.fractional_matrix_power(covariance, -0.5)
+        self.source_covariance_ = np.asarray(np.real_if_close(covariance), dtype=np.float64)
+        whitening = linalg.fractional_matrix_power(self.source_covariance_, -0.5)
+        if np.iscomplexobj(whitening):
+            LOGGER.debug("CoralAligner whitening matrix has max imaginary %.3e; discarding.", np.max(np.abs(whitening.imag)))
+            whitening = whitening.real
+        whitening = np.real_if_close(whitening)
+        self.whitening_ = np.asarray(whitening, dtype=np.float64)
         self.target_mean_ = np.zeros(self.n_features_in_)
         self.recoloring_ = np.eye(self.n_features_in_)
         return self
@@ -180,12 +184,18 @@ class CoralAligner(BaseEstimator, TransformerMixin):
         if covariance.shape != (self.n_features_in_, self.n_features_in_):
             raise ValueError("Covariance dimensionality does not match fitted data")
         covariance = covariance + self.epsilon * np.eye(self.n_features_in_)
+        covariance = np.asarray(np.real_if_close(covariance), dtype=np.float64)
         self.target_mean_ = mean
-        self.recoloring_ = linalg.fractional_matrix_power(covariance, 0.5)
+        recoloring = linalg.fractional_matrix_power(covariance, 0.5)
+        if np.iscomplexobj(recoloring):
+            LOGGER.debug("CoralAligner recoloring matrix has max imaginary %.3e; discarding.", np.max(np.abs(recoloring.imag)))
+            recoloring = recoloring.real
+        recoloring = np.real_if_close(recoloring)
+        self.recoloring_ = np.asarray(recoloring, dtype=np.float64)
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        X_array = np.asarray(X, dtype=float)
+        X_array = np.asarray(X, dtype=np.float64)
         if not self.enabled:
             return X_array
         if not hasattr(self, "source_mean_"):
@@ -193,7 +203,8 @@ class CoralAligner(BaseEstimator, TransformerMixin):
         centered = X_array - self.source_mean_
         whitened = centered @ self.whitening_
         recolored = whitened @ self.recoloring_
-        return recolored + self.target_mean_
+        result = np.asarray(np.real_if_close(recolored), dtype=np.float64)
+        return result + self.target_mean_
 
     # Compatibility with scikit-learn >=1.2 requires the attribute below.
     @property
@@ -217,6 +228,30 @@ class CoralAligner(BaseEstimator, TransformerMixin):
             "source_cov_condition_number": condition,
             "whiten_identity_fro_error": fro_error,
         }
+
+
+class RealMedianImputer(BaseEstimator, TransformerMixin):
+    """Impute missing values after enforcing real-valued numeric features."""
+
+    def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> "RealMedianImputer":
+        array = np.asarray(X, dtype=np.complex128)
+        array = np.real_if_close(array)
+        real = np.asarray(np.real(array), dtype=np.float64)
+        medians = np.nanmedian(real, axis=0)
+        medians = np.where(np.isnan(medians), 0.0, medians)
+        self.median_ = medians
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        array = np.asarray(X, dtype=np.complex128)
+        array = np.real_if_close(array)
+        real = np.asarray(np.real(array), dtype=np.float64)
+        if not hasattr(self, "median_"):
+            return real
+        inds = np.where(np.isnan(real))
+        if inds[0].size:
+            real[inds] = np.take(self.median_, inds[1])
+        return real
 
 
 def _resolve_feature_columns(data: pd.DataFrame, config: SourceDiagnosisConfig) -> List[str]:
@@ -254,7 +289,7 @@ def _build_pipeline(config: SourceDiagnosisConfig) -> Pipeline:
     classifier = config.model.create_classifier()
     aligner = CoralAligner(enabled=config.alignment.enabled, epsilon=config.alignment.epsilon)
     steps = [
-        ("imputer", SimpleImputer(strategy="median")),
+        ("imputer", RealMedianImputer()),
         ("aligner", aligner),
         ("scaler", StandardScaler()),
         ("classifier", classifier),
@@ -288,23 +323,30 @@ def train_source_domain_model(data: pd.DataFrame, config: SourceDiagnosisConfig)
     if not feature_columns:
         raise ValueError("No informative feature columns remain after preprocessing")
 
-    X = usable[feature_columns].astype(float)
+    raw_features = usable[feature_columns].to_numpy(dtype=np.complex128)
+    real_features = np.real_if_close(raw_features)
+    if np.iscomplexobj(real_features):
+        LOGGER.warning("Complex features detected; discarding imaginary components for modeling.")
+    real_features = np.asarray(np.real(real_features), dtype=np.float64)
+    X = pd.DataFrame(real_features, columns=feature_columns, index=usable.index)
     y = usable[config.label_column].astype(str)
 
-    stratify_y: Optional[pd.Series] = y if config.split.stratify else None
+    X_values = X.to_numpy(dtype=np.float64, copy=False)
+    y_values = y.to_numpy()
+    stratify_targets: Optional[np.ndarray] = y_values if config.split.stratify else None
     try:
         X_train, X_test, y_train, y_test = train_test_split(
-            X,
-            y,
+            X_values,
+            y_values,
             test_size=config.split.test_size,
             random_state=config.split.random_state,
-            stratify=stratify_y,
+            stratify=stratify_targets,
         )
     except ValueError as exc:
         LOGGER.warning("Stratified split failed (%s); retrying without stratification.", exc)
         X_train, X_test, y_train, y_test = train_test_split(
-            X,
-            y,
+            X_values,
+            y_values,
             test_size=config.split.test_size,
             random_state=config.split.random_state,
             stratify=None,
@@ -383,7 +425,7 @@ def train_source_domain_model(data: pd.DataFrame, config: SourceDiagnosisConfig)
     if config.cross_validation.enabled:
         splitter = config.cross_validation.create_splitter(config.split.random_state)
         try:
-            cv_scores = cross_val_score(pipeline, X, y, cv=splitter, scoring="accuracy")
+            cv_scores = cross_val_score(pipeline, X_values, y_values, cv=splitter, scoring="accuracy")
         except ValueError as exc:
             LOGGER.warning("Cross-validation failed: %s", exc)
 
