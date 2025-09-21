@@ -1,9 +1,11 @@
-# 高速列车轴承智能故障诊断：任务1&2代码说明
+# 高速列车轴承智能故障诊断：任务1-4代码说明
 
-本仓库现已覆盖竞赛题目前两个任务：
+本仓库现已覆盖竞赛题目前四个任务：
 
 * **任务1：数据分析与故障特征提取** —— 自动筛选源域样本、分段并提取多域特征；
 * **任务2：源域故障诊断建模** —— 在任务1特征基础上构建具备迁移潜力、且兼顾多层可解释性的诊断模型并输出评估报表。
+* **任务3：迁移诊断模型设计** —— 引入时频多模态特征、CORAL 对齐与伪标签策略，对目标域进行分类与标定；
+* **任务4：迁移诊断可解释性** —— 从全局/域间/局部三个层面输出迁移模型的解释性报表与图表。
 
 任务1的核心目标仍然是：
 
@@ -17,12 +19,13 @@
 
 ```
 mathmodel/
-├── config/                # YAML 配置
-├── scripts/               # 命令行脚本（特征提取 & 诊断建模）
+├── config/                # YAML 配置（dataset/task2/task3/task4）
+├── scripts/               # 命令行脚本（特征提取/诊断建模/迁移诊断/解释性分析）
 ├── src/
 │   ├── data_io/           # MAT 文件解析与源数据筛选
 │   ├── feature_engineering/ # 各类特征计算模块
-│   └── pipelines/         # 组合成特征数据集的流程工具
+│   ├── pipelines/         # 组合成特征数据集的流程工具
+│   └── tasks/             # 按任务拆分的高层封装（task1-task4）
 ├── targetData/            # 目标域16个轴承振动数据
 ├── artifacts/             # 默认的特征输出目录（脚本执行后生成）
 ├── README.md
@@ -86,7 +89,7 @@ python scripts/analyze_features.py --config config/dataset_config.yaml --max-rec
 - `tsne_embedding.png` / `umap_embedding.png`：源域与目标域特征的低维嵌入图（中文标题与刻度）；
 - `target_time_series_overview.png` 与 `target_*`/`source_*` 诊断图：新版时序网格对齐示例图、时频谱图、窗序折线、包络谱、时频显著性热图等多视角信号分析图。
 
-关于任务1数据字典、字段解释及处理流程的完整说明，详见新增文档 [`TASK1_REPORT.md`](TASK1_REPORT.md)。
+关于任务1数据字典、字段解释及处理流程的完整说明，详见 [`TASK1_REPORT.md`](TASK1_REPORT.md)。
 
 ## 任务2：源域故障诊断建模
 
@@ -117,6 +120,40 @@ python scripts/train_task2_model.py --config config/task2_config.yaml
 | `source_domain_model.joblib` | 训练完成的 scikit-learn 管线，可直接加载复用 |
 
 详细的建模策略、参数说明与结果解读见 [`TASK2_REPORT.md`](TASK2_REPORT.md)。
+
+## 任务3：迁移诊断模型
+
+`scripts/run_task3_transfer.py` 提供端到端的迁移训练脚本：
+
+```bash
+python scripts/run_task3_transfer.py --config config/task3_config.yaml
+```
+
+关键特性：
+
+- **多模态特征增强**：自动补充 STFT/CWT 统计量（`tf_stft_*`、`tf_cwt_*`），支持后续多模态建模。
+- **CORAL + 伪标签**：复用任务2的 `SourceDiagnosisConfig`，结合目标域均值/协方差完成对齐，按置信度自训练伪标签。
+- **对齐诊断**：输出 MMD/CORAL 指标、t-SNE 嵌入及伪标签演化历史，直观呈现迁移效果。
+- **模型存档**：保存 `transfer_model.joblib` 供任务4直接加载解释。
+
+详见 [`TASK3_REPORT.md`](TASK3_REPORT.md)。
+
+## 任务4：迁移诊断可解释性
+
+`scripts/run_task4_interpretability.py` 复用与任务3一致的配置，生成全局/域间/局部三个层面的解释性报表：
+
+```bash
+python scripts/run_task4_interpretability.py --config config/task4_config.yaml
+```
+
+输出包括：
+
+- `global_feature_effects.csv` + `global_importance.png`：多类别系数/赔率比排行及类别聚合。
+- `domain_shift_contributions.csv` + `domain_shift.png`：源/目标域均值差异对 logit 的贡献度。
+- `local_explanation.csv` + `local_explanation.png`：指定样本的特征贡献排序，可用于专家核验。
+- `interpretability_summary.json`：汇总解释性分析的核心统计。
+
+详细说明参见 [`TASK4_REPORT.md`](TASK4_REPORT.md)。
 
 ## 下一步建议
 

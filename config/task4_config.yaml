@@ -1,0 +1,74 @@
+# Configuration for generating task 4 interpretability artefacts.
+features:
+  source_table: artifacts/source_features.csv
+  target_table: artifacts/target_features.csv
+
+modeling:
+  features:
+    label_column: label
+    feature_columns: null
+    exclude_columns:
+      - dataset
+      - file_id
+      - file_path
+      - channel
+      - segment_index
+      - start_sample
+      - end_sample
+      - selection_score
+      - label_code
+  alignment:
+    enabled: true
+    epsilon: 1.0e-6
+  split:
+    test_size: 0.25
+    random_state: 42
+    stratify: true
+  model:
+    penalty: l2
+    C: 1.5
+    solver: lbfgs
+    max_iter: 500
+    multi_class: auto
+    class_weight: balanced
+  cross_validation:
+    enabled: true
+    folds: 5
+    shuffle: true
+  permutation_importance:
+    enabled: false
+
+time_frequency:
+  stft:
+    nperseg: 512
+    noverlap: 256
+    nfft: 1024
+    window: hann
+  cwt:
+    wavelet: ricker
+    min_scale: 1.0
+    max_scale: 128.0
+    num_scales: 64
+
+pseudo_label:
+  enabled: true
+  confidence_threshold: 0.95
+  max_iterations: 2
+  max_ratio: 0.5
+
+local_explanation:
+  dataset: target
+  index: 0
+  class: null
+  top_n: 10
+
+outputs:
+  directory: artifacts/task4
+  global_feature_table: global_feature_effects.csv
+  global_category_table: global_feature_categories.csv
+  domain_shift_table: domain_shift_contributions.csv
+  local_explanations: local_explanation.csv
+  global_plot: global_importance.png
+  domain_shift_plot: domain_shift.png
+  local_plot: local_explanation.png
+  metrics: interpretability_summary.json

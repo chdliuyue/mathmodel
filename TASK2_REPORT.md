@@ -88,6 +88,12 @@ CORAL 特征对齐（CoralAligner）
 * 结合目标域少量标注样本，验证 `CoralAligner` 的快速自适应能力，并探索多源统计量融合策略；
 * 将 permutation importance 与任务1中的特征重要性可视化结果结合，形成端到端的特征可信度评估框架。
 
+### 2024-07-05 架构升级小结
+
+- **模块分层**：建模逻辑迁移至 `src/tasks/task2/pipeline.py`，配合 `scripts/train_task2_model.py`，构成“配置解析 + 训练执行 + 产出写入”的标准流程，上游任务（task1）输出的 CSV 可无缝复用。
+- **迁移接口**：`run_transfer_learning`（task3）直接依赖 `SourceDiagnosisConfig`，无须重新实现模型训练；源域模型训练完毕即可接入时频增强特征与伪标签策略。
+- **数据衔接**：新增的时间频率特征、特征翻译词典等工具在任务2阶段已全部可用，下游任务若不需要可在配置中关闭；整条流水线保持“向后兼容，向前丰富”的设计目标。
+
 ---
 
 如需更深入了解实现细节或二次开发，可直接查阅 `src/modeling/task2.py` 与 `scripts/train_task2_model.py` 源码。
