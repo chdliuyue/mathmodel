@@ -1,6 +1,6 @@
 # Configuration for training the source-domain diagnostic model (task 2).
 features:
-  table_path: artifacts/source_features.csv
+  table_path: artifacts/task1/source_features.csv
   label_column: label
   feature_columns: null  # Use automatic numeric feature discovery
   exclude_columns:
@@ -24,7 +24,6 @@ model:
   C: 1.5
   solver: lbfgs
   max_iter: 500
-  multi_class: auto
   class_weight: balanced
 
 alignment:
@@ -54,3 +53,25 @@ outputs:
   model_path: source_domain_model.joblib
   feature_summary: feature_summary.csv
   features_used: features_used.txt
+  model_comparison: model_comparison.csv
+
+benchmarks:
+  - name: "随机森林"
+    type: random_forest
+    params:
+      n_estimators: 300
+      max_depth: null
+      class_weight: balanced
+  - name: "梯度提升"
+    type: gradient_boosting
+    params:
+      n_estimators: 200
+      learning_rate: 0.05
+      max_depth: 3
+  - name: "支持向量机"
+    type: svc
+    params:
+      C: 5.0
+      kernel: rbf
+      gamma: scale
+      probability: true

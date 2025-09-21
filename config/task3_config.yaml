@@ -1,7 +1,7 @@
 # Configuration driving the task 3 transfer learning pipeline.
 features:
-  source_table: artifacts/source_features.csv
-  target_table: artifacts/target_features.csv
+  source_table: artifacts/task1/source_features.csv
+  target_table: artifacts/task1/target_features.csv
   metadata_columns:
     - file_id
     - channel
@@ -78,3 +78,6 @@ outputs:
   embedding_before: tsne_before.png
   embedding_after: tsne_after.png
   model_path: transfer_model.joblib
+  pseudo_history_plot: 伪标签演化曲线.png
+  tf_feature_plot: 多模态特征分布对比.png
+  tf_example_plot: 多模态时频示例.png

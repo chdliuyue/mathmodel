@@ -16,6 +16,7 @@ from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler
 
 from src.feature_engineering.segmentation import segment_signal
+from src.feature_engineering.bearing import BearingSpec
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +33,13 @@ CHINESE_FONT_CANDIDATES: Sequence[str] = (
     "PingFang SC",
     "Arial Unicode MS",
 )
+
+FAULT_LABEL_MAP = {
+    "FTF": "FTF 保持架",
+    "BPFO": "BPFO 外圈",
+    "BPFI": "BPFI 内圈",
+    "BSF": "BSF 滚动体",
+}
 
 
 def configure_chinese_font() -> None:
@@ -530,31 +538,101 @@ def plot_covariance_heatmap(
         LOGGER.warning("No feature columns found for covariance heatmap")
         return
 
-    features = frame[feature_cols].copy().fillna(0.0)
-    variances = features.var(axis=0).sort_values(ascending=False)
+    features = frame[feature_cols].copy()
+    variances = features.var(axis=0, ddof=0)
+    variances = variances[variances > 1e-12].sort_values(ascending=False)
+    if variances.empty:
+        LOGGER.warning("All candidate features are near-constant; skipping covariance heatmap")
+        return
     selected_cols = variances.index[:max_features]
-    selected = features[selected_cols]
-    covariance = np.cov(selected.T)
+    selected = features[selected_cols].fillna(features[selected_cols].mean()).to_numpy(dtype=float)
+    if selected.size == 0:
+        LOGGER.warning("Selected feature subset is empty; skipping covariance heatmap")
+        return
+    correlation = np.corrcoef(selected, rowvar=False)
 
     configure_chinese_font()
     import matplotlib.pyplot as plt
 
     size = max(6.0, min(0.45 * len(selected_cols), 18.0))
     fig, ax = plt.subplots(figsize=(size, size))
-    im = ax.imshow(covariance, cmap="viridis", aspect="equal")
+    im = ax.imshow(correlation, cmap="viridis", aspect="equal", vmin=-1.0, vmax=1.0)
     ax.set_xticks(np.arange(len(selected_cols)))
     ax.set_xticklabels(selected_cols, rotation=90)
     ax.set_yticks(np.arange(len(selected_cols)))
     ax.set_yticklabels(selected_cols)
-    ax.set_title("特征协方差热图")
+    ax.set_title("特征相关性热图（皮尔逊）")
     ax.set_xlabel("特征索引")
     ax.set_ylabel("特征索引")
-    fig.colorbar(im, ax=ax, shrink=0.8, label="协方差")
+    fig.colorbar(im, ax=ax, shrink=0.8, label="相关系数")
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
+
+
+def compute_envelope_spectrum(
+    signal_array: np.ndarray,
+    sampling_rate: float,
+    max_frequency: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if signal_array.size == 0:
+        return np.asarray([]), np.asarray([])
+    analytic = hilbert(signal_array - np.mean(signal_array))
+    envelope = np.abs(analytic)
+    if envelope.size == 0:
+        return np.asarray([]), np.asarray([])
+    window = np.hanning(len(envelope)) if envelope.size > 1 else np.ones_like(envelope)
+    spectrum = np.abs(np.fft.rfft(envelope * window))
+    freqs = np.fft.rfftfreq(envelope.size, d=1.0 / sampling_rate)
+    if max_frequency is not None and freqs.size:
+        mask = freqs <= max_frequency
+        freqs = freqs[mask]
+        spectrum = spectrum[mask]
+    return freqs, spectrum
+
+
+def summarise_fault_frequency_response(
+    freqs: np.ndarray,
+    spectrum: np.ndarray,
+    bearing: BearingSpec,
+    rpm: float,
+    tolerance: float = 5.0,
+) -> pd.DataFrame:
+    records: List[dict[str, float | str]] = []
+    if freqs.size == 0 or spectrum.size == 0:
+        return pd.DataFrame(records)
+    try:
+        fault_freqs = bearing.fault_frequencies(rpm)
+    except ValueError as exc:
+        LOGGER.warning("计算故障特征频率失败：%s", exc)
+        return pd.DataFrame(records)
+
+    for key, frequency in fault_freqs.items():
+        if frequency <= 0 or not np.isfinite(frequency) or frequency > freqs.max():
+            continue
+        idx = int(np.argmin(np.abs(freqs - frequency)))
+        predicted_amplitude = float(spectrum[idx])
+        mask = (freqs >= max(0.0, frequency - tolerance)) & (freqs <= frequency + tolerance)
+        if np.any(mask):
+            local_indices = np.where(mask)[0]
+            local_peak = int(local_indices[np.argmax(spectrum[mask])])
+        else:
+            local_peak = idx
+        peak_frequency = float(freqs[local_peak])
+        peak_amplitude = float(spectrum[local_peak])
+        records.append(
+            {
+                "fault": key.upper(),
+                "predicted_frequency": float(frequency),
+                "peak_frequency": peak_frequency,
+                "predicted_amplitude": predicted_amplitude,
+                "peak_amplitude": peak_amplitude,
+                "frequency_error": float(peak_frequency - frequency),
+            }
+        )
+    return pd.DataFrame(records)
 
 
 def plot_envelope_spectrum(
@@ -563,7 +641,10 @@ def plot_envelope_spectrum(
     output_path: Path,
     config: SignalPlotConfig,
     max_frequency: Optional[float] = None,
-) -> None:
+    bearing: Optional[BearingSpec] = None,
+    rpm: Optional[float] = None,
+    tolerance: float = 5.0,
+) -> pd.DataFrame:
     """绘制希尔伯特包络谱，突出滚动轴承特征频率。"""
 
     configure_chinese_font()
@@ -575,16 +656,10 @@ def plot_envelope_spectrum(
         LOGGER.warning("Signal preview为空，无法绘制包络谱")
         return
 
-    analytic = hilbert(signal - np.mean(signal))
-    envelope = np.abs(analytic)
-    window = np.hanning(len(envelope))
-    spectrum = np.abs(np.fft.rfft(envelope * window))
-    freqs = np.fft.rfftfreq(envelope.size, d=1.0 / sampling_rate)
-
-    if max_frequency is not None:
-        mask = freqs <= max_frequency
-        freqs = freqs[mask]
-        spectrum = spectrum[mask]
+    freqs, spectrum = compute_envelope_spectrum(signal, sampling_rate, max_frequency=max_frequency)
+    if freqs.size == 0:
+        LOGGER.warning("包络谱计算结果为空，跳过绘图")
+        return pd.DataFrame()
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(freqs, spectrum, color="#d62728", linewidth=0.9)
@@ -593,10 +668,46 @@ def plot_envelope_spectrum(
     ax.set_ylabel("幅值")
     ax.grid(True, linestyle="--", alpha=0.3)
 
+    summary_df = pd.DataFrame()
+    if bearing is not None and rpm is not None:
+        summary_df = summarise_fault_frequency_response(freqs, spectrum, bearing, float(rpm), tolerance=tolerance)
+        for _, row in summary_df.iterrows():
+            freq_value = row.get("predicted_frequency")
+            peak_frequency = row.get("peak_frequency")
+            peak_amplitude = row.get("peak_amplitude")
+            if freq_value is None or not np.isfinite(freq_value):
+                continue
+            if freq_value > freqs.max():
+                continue
+            label = FAULT_LABEL_MAP.get(str(row.get("fault", "")).upper(), str(row.get("fault", "")))
+            ax.axvline(freq_value, color="#1f77b4", linestyle="--", alpha=0.6)
+            if peak_frequency is not None and peak_amplitude is not None and np.isfinite(peak_amplitude):
+                ax.scatter([peak_frequency], [peak_amplitude], color="#ff7f0e", s=24, zorder=5)
+                ax.text(
+                    float(freq_value),
+                    float(peak_amplitude),
+                    label,
+                    rotation=90,
+                    verticalalignment="bottom",
+                    horizontalalignment="right",
+                    fontsize="small",
+                )
+            else:
+                ax.text(
+                    float(freq_value),
+                    float(spectrum.max()) * 0.9,
+                    label,
+                    rotation=90,
+                    verticalalignment="bottom",
+                    horizontalalignment="right",
+                    fontsize="small",
+                )
+
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
+    return summary_df
 
 
 def plot_window_sequence(

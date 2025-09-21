@@ -7,6 +7,8 @@
 * **任务3：迁移诊断模型设计** —— 引入时频多模态特征、CORAL 对齐与伪标签策略，对目标域进行分类与标定；
 * **任务4：迁移诊断可解释性** —— 从全局/域间/局部三个层面输出迁移模型的解释性报表与图表。
 
+四个任务的结果分别存放于 `artifacts/task1` 至 `artifacts/task4` 目录，图表与表格均以 UTF-8 编码输出，便于直接纳入中文报告。
+
 任务1的核心目标仍然是：
 
 1. 针对源域（台架）数据自动筛选与目标域工况更接近的代表性样本；
@@ -40,7 +42,7 @@ mathmodel/
 pip install -r requirements.txt
 ```
 
-## 特征提取流程
+## 任务1：数据分析与故障特征提取
 
 脚本 `scripts/extract_features.py` 读取 `config/dataset_config.yaml` 中的配置完成整个流程。主要步骤如下：
 
@@ -85,7 +87,8 @@ python scripts/analyze_features.py --config config/dataset_config.yaml --max-rec
 - `特征整合表.csv`：融合源域/目标域特征，统一字段命名以便后续任务直接调用；
 - `域对齐指标.csv`：输出 MMD、CORAL 等分布一致性指标，评估源目标域差异；
 - `特征重要度.png` 与 `特征重要度.csv`：基于随机森林的特征重要度排行；
-- `特征协方差热图.png`：展示主要特征之间的协方差关系；
+- `特征协方差热图.png`：展示主要特征之间的皮尔逊相关性；
+- `故障特征频率验证.csv`：列出理论频率、包络谱峰值与误差，辅助校验轴承参数设置是否匹配；
 - `tsne_embedding.png` / `umap_embedding.png`：源域与目标域特征的低维嵌入图（中文标题与刻度）；
 - `target_time_series_overview.png` 与 `target_*`/`source_*` 诊断图：新版时序网格对齐示例图、时频谱图、窗序折线、包络谱、时频显著性热图等多视角信号分析图。
 
@@ -118,6 +121,9 @@ python scripts/train_task2_model.py --config config/task2_config.yaml
 | `feature_summary.csv` | 参与建模特征的统计摘要（均值/标准差等） |
 | `features_used.txt` | 训练实际使用的特征清单 |
 | `source_domain_model.joblib` | 训练完成的 scikit-learn 管线，可直接加载复用 |
+| `model_comparison.csv` | 统一划分下的多模型表现对比（准确率、宏 F1 等指标） |
+
+此外，脚本会在同一训练/测试划分下评估随机森林、梯度提升与支持向量机等基线模型，便于与主模型形成量化对比。
 
 详细的建模策略、参数说明与结果解读见 [`TASK2_REPORT.md`](TASK2_REPORT.md)。
 
@@ -133,8 +139,9 @@ python scripts/run_task3_transfer.py --config config/task3_config.yaml
 
 - **多模态特征增强**：自动补充 STFT/CWT 统计量（`tf_stft_*`、`tf_cwt_*`），支持后续多模态建模。
 - **CORAL + 伪标签**：复用任务2的 `SourceDiagnosisConfig`，结合目标域均值/协方差完成对齐，按置信度自训练伪标签。
-- **对齐诊断**：输出 MMD/CORAL 指标、t-SNE 嵌入及伪标签演化历史，直观呈现迁移效果。
+- **对齐诊断**：输出 MMD/CORAL 指标、t-SNE 嵌入（标签颜色 = 源域真实标签 + 目标域预测标签），直观呈现伪标签前后的分类边界。
 - **模型存档**：保存 `transfer_model.joblib` 供任务4直接加载解释。
+- **可视化补强**：附带 `伪标签演化曲线.png`、`多模态特征分布对比.png`、`多模态时频示例.png`，形成可直接用于汇报的中文图件。
 
 详见 [`TASK3_REPORT.md`](TASK3_REPORT.md)。
 

@@ -1,7 +1,7 @@
 # Configuration for generating task 4 interpretability artefacts.
 features:
-  source_table: artifacts/source_features.csv
-  target_table: artifacts/target_features.csv
+  source_table: artifacts/task1/source_features.csv
+  target_table: artifacts/task1/target_features.csv
 
 modeling:
   features:

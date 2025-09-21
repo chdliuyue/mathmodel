@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -67,18 +67,20 @@ class LogisticModelConfig:
     C: float = 1.0
     solver: str = "lbfgs"
     max_iter: int = 400
-    multi_class: str = "auto"
+    multi_class: Optional[str] = None
     class_weight: Optional[str] = None
 
     def create_classifier(self) -> LogisticRegression:
-        return LogisticRegression(
-            penalty=self.penalty,
-            C=self.C,
-            solver=self.solver,
-            max_iter=self.max_iter,
-            multi_class=self.multi_class,
-            class_weight=self.class_weight,
-        )
+        kwargs = {
+            "penalty": self.penalty,
+            "C": self.C,
+            "solver": self.solver,
+            "max_iter": self.max_iter,
+            "class_weight": self.class_weight,
+        }
+        if self.multi_class is not None:
+            kwargs["multi_class"] = self.multi_class
+        return LogisticRegression(**kwargs)
 
 
 @dataclass
@@ -129,6 +131,8 @@ class TrainingResult:
     pipeline: Pipeline
     feature_columns: List[str]
     classes: List[str]
+    train_indices: List[int]
+    test_indices: List[int]
     y_test: np.ndarray
     y_pred: np.ndarray
     y_proba: Optional[np.ndarray]
@@ -333,24 +337,38 @@ def train_source_domain_model(data: pd.DataFrame, config: SourceDiagnosisConfig)
 
     X_values = X.to_numpy(dtype=np.float64, copy=False)
     y_values = y.to_numpy()
+    indices = X.index.to_numpy()
     stratify_targets: Optional[np.ndarray] = y_values if config.split.stratify else None
     try:
-        X_train, X_test, y_train, y_test = train_test_split(
+        X_train, X_test, y_train, y_test, train_idx, test_idx = train_test_split(
             X_values,
             y_values,
+            indices,
             test_size=config.split.test_size,
             random_state=config.split.random_state,
             stratify=stratify_targets,
         )
     except ValueError as exc:
         LOGGER.warning("Stratified split failed (%s); retrying without stratification.", exc)
-        X_train, X_test, y_train, y_test = train_test_split(
+        X_train, X_test, y_train, y_test, train_idx, test_idx = train_test_split(
             X_values,
             y_values,
+            indices,
             test_size=config.split.test_size,
             random_state=config.split.random_state,
             stratify=None,
         )
+    def _to_native(values: np.ndarray) -> List[Any]:
+        native: List[Any] = []
+        for value in values:
+            if hasattr(value, "item"):
+                native.append(value.item())
+            else:
+                native.append(value)
+        return native
+
+    train_indices = _to_native(train_idx)
+    test_indices = _to_native(test_idx)
 
     pipeline = _build_pipeline(config)
     pipeline.fit(X_train, y_train)
@@ -446,6 +464,8 @@ def train_source_domain_model(data: pd.DataFrame, config: SourceDiagnosisConfig)
         pipeline=pipeline,
         feature_columns=list(feature_columns),
         classes=classes,
+        train_indices=train_indices,
+        test_indices=test_indices,
         y_test=np.asarray(y_test),
         y_pred=np.asarray(y_pred),
         y_proba=y_proba,
