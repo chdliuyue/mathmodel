@@ -22,6 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 FEATURE_PREFIXES: Sequence[str] = ("time_", "freq_", "env_", "fault_")
+LOG_EPS = 1e-12
 CHINESE_FONT_CANDIDATES: Sequence[str] = (
     "SimHei",
     "Microsoft YaHei",
@@ -662,11 +663,20 @@ def plot_envelope_spectrum(
         return pd.DataFrame()
 
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(freqs, spectrum, color="#d62728", linewidth=0.9)
+    log_spectrum = np.log10(np.maximum(spectrum, LOG_EPS))
+    ax.plot(freqs, log_spectrum, color="#d62728", linewidth=0.9)
     ax.set_title(f"包络谱图 – {summary.file_id} / {record.channel}")
     ax.set_xlabel("频率 [Hz]")
-    ax.set_ylabel("幅值")
+    ax.set_ylabel("log10(包络幅值)")
     ax.grid(True, linestyle="--", alpha=0.3)
+    ax.text(
+        0.02,
+        0.94,
+        "已对幅值取log10以突出长尾细节",
+        transform=ax.transAxes,
+        fontsize="small",
+        color="#555555",
+    )
 
     summary_df = pd.DataFrame()
     if bearing is not None and rpm is not None:
@@ -682,10 +692,11 @@ def plot_envelope_spectrum(
             label = FAULT_LABEL_MAP.get(str(row.get("fault", "")).upper(), str(row.get("fault", "")))
             ax.axvline(freq_value, color="#1f77b4", linestyle="--", alpha=0.6)
             if peak_frequency is not None and peak_amplitude is not None and np.isfinite(peak_amplitude):
-                ax.scatter([peak_frequency], [peak_amplitude], color="#ff7f0e", s=24, zorder=5)
+                peak_log = float(np.log10(max(peak_amplitude, LOG_EPS)))
+                ax.scatter([peak_frequency], [peak_log], color="#ff7f0e", s=24, zorder=5)
                 ax.text(
                     float(freq_value),
-                    float(peak_amplitude),
+                    peak_log,
                     label,
                     rotation=90,
                     verticalalignment="bottom",
@@ -695,7 +706,7 @@ def plot_envelope_spectrum(
             else:
                 ax.text(
                     float(freq_value),
-                    float(spectrum.max()) * 0.9,
+                    float(log_spectrum.max()),
                     label,
                     rotation=90,
                     verticalalignment="bottom",
@@ -788,16 +799,32 @@ def plot_time_frequency_saliency(
         LOGGER.warning("STFT结果为空，跳过时频显著性绘制")
         return
 
-    mean = np.mean(magnitude)
-    std = np.std(magnitude) + 1e-9
-    saliency = np.maximum((magnitude - mean) / std, 0.0)
+    log_mag = np.log1p(magnitude)
+    freq_mean = log_mag.mean(axis=1, keepdims=True)
+    freq_std = log_mag.std(axis=1, keepdims=True) + 1e-6
+    time_mean = log_mag.mean(axis=0, keepdims=True)
+    time_std = log_mag.std(axis=0, keepdims=True) + 1e-6
+    freq_score = (log_mag - freq_mean) / freq_std
+    time_score = (log_mag - time_mean) / time_std
+    combined = np.maximum(freq_score + time_score, 0.0)
+    scale = np.percentile(combined, 99) + 1e-6
+    saliency = np.clip(combined / scale, 0.0, 1.0)
+    saliency = np.power(saliency, 0.9)
 
     fig, ax = plt.subplots(figsize=(10, 4))
-    mesh = ax.pcolormesh(times, freqs, saliency, shading="auto", cmap="YlOrRd")
+    mesh = ax.pcolormesh(times, freqs, saliency, shading="auto", cmap="YlOrRd", vmin=0.0, vmax=1.0)
     ax.set_title(f"时频显著性热图 – {summary.file_id} / {record.channel}")
     ax.set_xlabel("时间 [秒]")
     ax.set_ylabel("频率 [Hz]")
-    fig.colorbar(mesh, ax=ax, label="显著性 (z-score)")
+    fig.colorbar(mesh, ax=ax, label="显著性 (归一化z-score)")
+    ax.text(
+        0.02,
+        0.94,
+        "基于log幅值与双向z-score归一化",
+        transform=ax.transAxes,
+        fontsize="small",
+        color="#555555",
+    )
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)

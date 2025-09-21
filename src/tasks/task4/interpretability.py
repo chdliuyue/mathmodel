@@ -41,6 +41,20 @@ def _transform_for_classifier(pipeline: Pipeline, features: pd.DataFrame, featur
     return feature_pipeline.transform(data)
 
 
+def _add_display_names(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty or "feature" not in frame.columns:
+        return frame
+    display = frame.get("feature_chinese")
+    if display is None:
+        display = frame["feature"].copy()
+    else:
+        display = display.fillna(frame["feature"])
+    frame = frame.copy()
+    frame["feature_display"] = display
+    frame.loc[frame["feature"] == "__intercept__", "feature_display"] = "截距"
+    return frame
+
+
 def compute_global_feature_effects(result: TransferResult) -> GlobalInterpretabilityResult:
     classifier = _extract_classifier(result.final_pipeline)
     if not hasattr(classifier, "coef_"):
@@ -81,6 +95,7 @@ def compute_global_feature_effects(result: TransferResult) -> GlobalInterpretabi
         how="left",
     )
     per_feature.rename(columns={"chinese_name": "feature_chinese"}, inplace=True)
+    per_feature = _add_display_names(per_feature)
 
     per_category = per_feature.groupby(["class", "category"], as_index=False)["abs_coefficient"].sum()
     per_category.rename(columns={"abs_coefficient": "importance"}, inplace=True)
@@ -94,8 +109,20 @@ def compute_domain_shift_contributions(result: TransferResult) -> pd.DataFrame:
         raise ValueError("Classifier does not expose coefficients for interpretation.")
 
     feature_columns = result.feature_columns
-    source_mean = result.source_features[feature_columns].mean(axis=0)
-    target_mean = result.target_features[feature_columns].mean(axis=0)
+    if not feature_columns:
+        return pd.DataFrame()
+
+    try:
+        source_transformed = _transform_for_classifier(result.final_pipeline, result.source_features, feature_columns)
+        target_transformed = _transform_for_classifier(result.final_pipeline, result.target_features, feature_columns)
+    except KeyError:
+        return pd.DataFrame()
+
+    if source_transformed.size == 0 or target_transformed.size == 0:
+        return pd.DataFrame()
+
+    source_mean = pd.Series(np.mean(source_transformed, axis=0), index=feature_columns)
+    target_mean = pd.Series(np.mean(target_transformed, axis=0), index=feature_columns)
     delta = target_mean - source_mean
 
     dictionary = build_feature_dictionary(feature_columns)
@@ -122,6 +149,7 @@ def compute_domain_shift_contributions(result: TransferResult) -> pd.DataFrame:
     )
     contribution_df.rename(columns={"chinese_name": "feature_chinese"}, inplace=True)
     contribution_df["abs_contribution"] = contribution_df["logit_contribution"].abs()
+    contribution_df = _add_display_names(contribution_df)
     return contribution_df
 
 
@@ -188,26 +216,35 @@ def explain_instance(
     )
     explanation.rename(columns={"chinese_name": "feature_chinese"}, inplace=True)
     explanation.sort_values("logit_contribution", key=lambda x: x.abs(), ascending=False, inplace=True)
+    explanation = _add_display_names(explanation)
     return explanation
 
 
 def plot_global_importance(result: GlobalInterpretabilityResult, output_path: Path, top_n: int = 20) -> None:
     configure_chinese_font()
     import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
 
     summary = result.per_feature.sort_values("abs_coefficient", ascending=False).head(top_n)
     if summary.empty:
         LOGGER.warning("Global importance summary is empty; skipping plot")
         return
     plt.figure(figsize=(10, max(4, top_n * 0.3)))
-    colours = summary["category"].astype(str)
-    bars = plt.barh(summary["feature"], summary["abs_coefficient"], color="steelblue")
-    plt.xlabel("|Coefficient|")
-    plt.ylabel("Feature")
-    plt.title("Global feature importance (absolute coefficients)")
+    summary = summary.copy()
+    summary["feature_display"] = summary.get("feature_display", summary["feature"]).fillna(summary["feature"])
+    categories = summary["category"].fillna("未分类").astype(str)
+    unique_categories = list(categories.unique())
+    palette = plt.cm.get_cmap("tab20", max(len(unique_categories), 1))
+    colour_map = {cat: palette(index) for index, cat in enumerate(unique_categories)}
+    bar_colours = [colour_map[cat] for cat in categories]
+    bars = plt.barh(summary["feature_display"], summary["abs_coefficient"], color=bar_colours)
+    plt.xlabel("|系数|")
+    plt.ylabel("特征")
+    plt.title("全局特征重要度（绝对系数）")
     plt.gca().invert_yaxis()
-    for bar, cat in zip(bars, colours):
-        bar.set_alpha(0.8)
+    legend_handles = [Patch(facecolor=colour_map[cat], edgecolor="none", label=cat) for cat in unique_categories]
+    if legend_handles:
+        plt.legend(handles=legend_handles, title="特征类别", fontsize="small")
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, dpi=300)
@@ -217,20 +254,28 @@ def plot_global_importance(result: GlobalInterpretabilityResult, output_path: Pa
 def plot_domain_shift(contributions: pd.DataFrame, output_path: Path, top_n: int = 20) -> None:
     configure_chinese_font()
     import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
 
     summary = contributions.sort_values("abs_contribution", ascending=False).head(top_n)
     if summary.empty:
         LOGGER.warning("Domain shift contribution table is empty; skipping plot")
         return
     plt.figure(figsize=(10, max(4, top_n * 0.3)))
-    colours = summary["class"].astype(str)
-    bars = plt.barh(summary["feature"], summary["logit_contribution"], color="darkorange")
-    plt.xlabel("Logit shift")
-    plt.ylabel("Feature")
-    plt.title("Feature-level contributions to domain shift")
+    summary = summary.copy()
+    summary["feature_display"] = summary.get("feature_display", summary["feature"]).fillna(summary["feature"])
+    classes = summary["class"].astype(str)
+    unique_classes = list(classes.unique())
+    palette = plt.cm.get_cmap("Set2", max(len(unique_classes), 1))
+    colour_map = {cls: palette(index) for index, cls in enumerate(unique_classes)}
+    bar_colours = [colour_map[cls] for cls in classes]
+    bars = plt.barh(summary["feature_display"], summary["logit_contribution"], color=bar_colours)
+    plt.xlabel("Logit 变化量")
+    plt.ylabel("特征")
+    plt.title("域偏移特征贡献排名")
     plt.gca().invert_yaxis()
-    for bar, cls in zip(bars, colours):
-        bar.set_alpha(0.8)
+    legend_handles = [Patch(facecolor=colour_map[cls], edgecolor="none", label=cls) for cls in unique_classes]
+    if legend_handles:
+        plt.legend(handles=legend_handles, title="类别", fontsize="small", loc="lower right")
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, dpi=300)
@@ -246,10 +291,15 @@ def plot_local_explanation(explanation: pd.DataFrame, output_path: Path, top_n: 
         LOGGER.warning("Local explanation table is empty; skipping plot")
         return
     plt.figure(figsize=(10, max(4, top_n * 0.4)))
-    bars = plt.barh(summary["feature"], summary["logit_contribution"], color="seagreen")
-    plt.xlabel("Logit contribution")
-    plt.ylabel("Feature")
-    plt.title("Top feature contributions for the analysed sample")
+    summary = summary.copy()
+    summary["feature_display"] = summary.get("feature_display", summary["feature"]).fillna(summary["feature"])
+    contributions = summary["logit_contribution"].to_numpy()
+    colours = ["#d62728" if value >= 0 else "#1f77b4" for value in contributions]
+    plt.barh(summary["feature_display"], contributions, color=colours)
+    plt.xlabel("对Logit的贡献")
+    plt.ylabel("特征")
+    plt.title("样本特征贡献排序")
+    plt.axvline(0.0, color="#444444", linewidth=0.8, linestyle="--")
     plt.gca().invert_yaxis()
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)

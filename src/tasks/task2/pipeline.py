@@ -11,8 +11,13 @@ import logging
 import numpy as np
 import pandas as pd
 from sklearn.base import clone
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
@@ -150,6 +155,28 @@ def _build_benchmark_estimator(spec: Dict[str, Any], random_state: int):
         params.setdefault("probability", True)
         params.setdefault("random_state", random_state)
         return SVC(**params)
+    if model_type in {"extra_trees", "extremely_randomized"}:
+        params.setdefault("n_estimators", 400)
+        params.setdefault("random_state", random_state)
+        return ExtraTreesClassifier(**params)
+    if model_type in {"logistic", "logistic_regression"}:
+        params.setdefault("max_iter", 400)
+        params.setdefault("solver", "lbfgs")
+        params.setdefault("random_state", random_state)
+        return LogisticRegression(**params)
+    if model_type in {"knn", "k_neighbors"}:
+        params.setdefault("n_neighbors", 5)
+        return KNeighborsClassifier(**params)
+    if model_type in {"mlp", "neural_network"}:
+        params.setdefault("hidden_layer_sizes", (128,))
+        params.setdefault("activation", "relu")
+        params.setdefault("random_state", random_state)
+        params.setdefault("max_iter", 500)
+        return MLPClassifier(**params)
+    if model_type in {"lda", "linear_discriminant"}:
+        return LinearDiscriminantAnalysis(**params)
+    if model_type in {"naive_bayes", "gaussian_nb"}:
+        return GaussianNB(**params)
     raise ValueError(f"Unsupported benchmark model type: {model_type}")
 
 
