@@ -19,7 +19,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from src.analysis.feature_analysis import configure_chinese_font, plot_embedding, run_tsne
-from src.tasks.task3 import TransferConfig, parse_transfer_config, run_transfer_learning
+from src.tasks.task3 import (
+    TimeFrequencyConfig,
+    TransferConfig,
+    parse_transfer_config,
+    run_transfer_learning,
+)
+from src.tasks.task3.features import continuous_wavelet_transform, get_cwt_wavelet
 from src.tasks.task3.segment_loader import SegmentFetcher
 
 LOGGER = logging.getLogger("task3_transfer")
@@ -136,7 +142,13 @@ def _plot_time_frequency_distribution(result, path: Path) -> None:
     plt.close(fig)
 
 
-def _plot_multimodal_example(result, output_path: Path) -> None:
+def _plot_multimodal_example(
+    result,
+    output_path: Path,
+    tf_config: TimeFrequencyConfig,
+    data_output: Optional[Path] = None,
+    metadata_output: Optional[Path] = None,
+) -> None:
     predictions = result.final_predictions
     if predictions is None or predictions.empty:
         return
@@ -179,27 +191,41 @@ def _plot_multimodal_example(result, output_path: Path) -> None:
     axes[0].set_ylabel("幅值")
     axes[0].grid(True, linestyle="--", alpha=0.3)
 
-    nperseg = min(len(segment), 512)
+    nperseg = min(len(segment), max(128, tf_config.stft_nperseg))
     nperseg = max(nperseg, 128)
-    noverlap = nperseg // 2
+    noverlap = min(tf_config.stft_noverlap, nperseg - 1)
+    nfft = max(tf_config.stft_nfft, nperseg)
     try:
-        freqs, times, stft_values = signal.stft(segment, fs=sampling_rate, nperseg=nperseg, noverlap=noverlap)
+        freqs, times, stft_values = signal.stft(
+            segment,
+            fs=sampling_rate,
+            window=tf_config.stft_window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=nfft,
+        )
     except Exception as exc:
         LOGGER.warning("STFT 计算失败：%s", exc)
         return
-    axes[1].pcolormesh(times, freqs, np.abs(stft_values), shading="auto", cmap="magma")
+    stft_magnitude = np.abs(stft_values)
+    axes[1].pcolormesh(times, freqs, stft_magnitude, shading="auto", cmap="magma")
     axes[1].set_title("STFT 时频图")
     axes[1].set_xlabel("时间 [秒]")
     axes[1].set_ylabel("频率 [Hz]")
 
-    scales = np.linspace(1, 128, 64)
+    if tf_config.cwt_num_scales < 2 or tf_config.cwt_max_scale <= tf_config.cwt_min_scale:
+        LOGGER.warning("CWT 配置无效，无法绘制CWT图像")
+        return
+    scales = np.linspace(tf_config.cwt_min_scale, tf_config.cwt_max_scale, tf_config.cwt_num_scales)
     try:
-        coefficients = signal.cwt(segment - np.mean(segment), signal.ricker, scales)
+        wavelet = get_cwt_wavelet(tf_config.cwt_wavelet)
+        coefficients = continuous_wavelet_transform(segment, wavelet, scales)
     except Exception as exc:
         LOGGER.warning("CWT 计算失败：%s", exc)
         return
+    cwt_magnitude = np.abs(coefficients)
     time_grid = np.arange(coefficients.shape[1]) / sampling_rate
-    axes[2].pcolormesh(time_grid, scales, np.abs(coefficients), shading="auto", cmap="viridis")
+    axes[2].pcolormesh(time_grid, scales, cwt_magnitude, shading="auto", cmap="viridis")
     axes[2].set_title("CWT 尺度图")
     axes[2].set_xlabel("时间 [秒]")
     axes[2].set_ylabel("尺度")
@@ -223,6 +249,43 @@ def _plot_multimodal_example(result, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
+
+    if data_output is not None:
+        data_output.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "time_axis": time_axis.astype(np.float32),
+            "segment": segment.astype(np.float32),
+            "sampling_rate": np.asarray([sampling_rate], dtype=np.float32),
+            "stft_frequencies": freqs.astype(np.float32),
+            "stft_times": times.astype(np.float32),
+            "stft_magnitude": stft_magnitude.astype(np.float32),
+            "stft_phase": np.angle(stft_values).astype(np.float32),
+            "cwt_scales": scales.astype(np.float32),
+            "cwt_magnitude": cwt_magnitude.astype(np.float32),
+            "cwt_phase": np.angle(coefficients).astype(np.float32),
+        }
+        np.savez(data_output, **payload)
+
+    if metadata_output is not None:
+        metadata_output.parent.mkdir(parents=True, exist_ok=True)
+        probability_value = None
+        if probability is not None:
+            try:
+                if np.isscalar(probability):
+                    probability_value = float(probability)
+            except Exception:
+                probability_value = None
+        metadata = {
+            "file_id": file_id,
+            "channel": str(feature_row.get("channel", "")),
+            "row_index": int(row_index) if row_index is not None else int(target_idx),
+            "predicted_label": str(predicted_label),
+            "max_probability": probability_value,
+            "segment_length": int(len(segment)),
+            "sampling_rate": float(sampling_rate),
+        }
+        with metadata_output.open("w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, ensure_ascii=False, indent=2)
 def run_pipeline(
     config_path: Path,
     source_override: Optional[Path] = None,
@@ -293,10 +356,10 @@ def run_pipeline(
 
     tsne_before = run_tsne(result.combined_before)
     if tsne_before is not None:
-        plot_embedding(tsne_before, embedding_before_path, title="t-SNE (before alignment)")
+        plot_embedding(tsne_before, embedding_before_path, title="t-SNE 嵌入（对齐前）")
     tsne_after = run_tsne(result.combined_aligned)
     if tsne_after is not None:
-        plot_embedding(tsne_after, embedding_after_path, title="t-SNE (after alignment)")
+        plot_embedding(tsne_after, embedding_after_path, title="t-SNE 嵌入（对齐后）")
 
     pseudo_plot_path = output_dir / outputs_cfg.get("pseudo_history_plot", "伪标签演化曲线.png")
     _plot_pseudo_history(result.pseudo_label_history, pseudo_plot_path)
@@ -305,7 +368,15 @@ def run_pipeline(
     _plot_time_frequency_distribution(result, tf_plot_path)
 
     tf_example_path = output_dir / outputs_cfg.get("tf_example_plot", "多模态时频示例.png")
-    _plot_multimodal_example(result, tf_example_path)
+    tf_example_data = outputs_cfg.get("tf_example_data", "多模态时频示例数据.npz")
+    tf_example_meta = outputs_cfg.get("tf_example_metadata", "多模态时频示例信息.json")
+    _plot_multimodal_example(
+        result,
+        tf_example_path,
+        transfer_config.time_frequency,
+        data_output=output_dir / tf_example_data,
+        metadata_output=output_dir / tf_example_meta,
+    )
 
     LOGGER.info("Transfer learning pipeline completed. Outputs saved to %s", output_dir)
 

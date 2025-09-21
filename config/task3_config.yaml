@@ -81,3 +81,5 @@ outputs:
   pseudo_history_plot: 伪标签演化曲线.png
   tf_feature_plot: 多模态特征分布对比.png
   tf_example_plot: 多模态时频示例.png
+  tf_example_data: 多模态时频示例数据.npz
+  tf_example_metadata: 多模态时频示例信息.json

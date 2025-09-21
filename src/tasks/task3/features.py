@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 
 import logging
 
@@ -14,7 +14,7 @@ LOGGER = logging.getLogger(__name__)
 
 EPS = 1e-12
 _RICKER_FALLBACK_WARNED = False
-_CWT_UNAVAILABLE_WARNED = False
+_CWT_FALLBACK_WARNED = False
 
 
 @dataclass
@@ -146,6 +146,82 @@ def _cwt_wavelet(wavelet: str):
     raise ValueError(f"Unsupported wavelet type: {wavelet}")
 
 
+def get_cwt_wavelet(name: str) -> Callable[[int, float], np.ndarray]:
+    """Expose the configured wavelet generator for external consumers."""
+
+    return _cwt_wavelet(name)
+
+
+def _fallback_cwt(
+    data: np.ndarray,
+    wavelet: Callable[[int, float], np.ndarray],
+    scales: np.ndarray,
+) -> np.ndarray:
+    """Numerically approximate the CWT when SciPy does not expose it."""
+
+    global _CWT_FALLBACK_WARNED
+    if not _CWT_FALLBACK_WARNED:
+        LOGGER.warning("scipy.signal.cwt unavailable; using numerical fallback implementation.")
+        _CWT_FALLBACK_WARNED = True
+
+    samples = data.size
+    if samples == 0 or scales.size == 0:
+        return np.zeros((scales.size, samples), dtype=np.complex128)
+
+    coefficients = np.zeros((scales.size, samples), dtype=np.complex128)
+    use_fft = hasattr(signal, "fftconvolve")
+    for idx, scale in enumerate(scales):
+        scale = float(scale)
+        if not np.isfinite(scale) or scale <= 0:
+            raise ValueError("CWT scales must be positive finite values")
+        try:
+            wavelet_samples = wavelet(samples, scale)
+        except TypeError:
+            wavelet_samples = wavelet(int(samples), float(scale))
+        kernel = np.asarray(wavelet_samples, dtype=np.complex128).reshape(-1)
+        if kernel.size != samples:
+            target = np.linspace(0, kernel.size - 1, samples)
+            original = np.arange(kernel.size)
+            real_part = np.interp(target, original, np.real(kernel))
+            if np.iscomplexobj(kernel):
+                imag_part = np.interp(target, original, np.imag(kernel))
+                kernel = real_part + 1j * imag_part
+            else:
+                kernel = real_part
+        kernel = np.conjugate(kernel[::-1])
+        if use_fft:
+            conv = signal.fftconvolve(data, kernel, mode="same")
+        else:  # pragma: no cover - NumPy fall-back
+            conv = np.convolve(data, kernel, mode="same")
+        coefficients[idx] = conv / np.sqrt(scale)
+
+    return coefficients
+
+
+def continuous_wavelet_transform(
+    signal_array: np.ndarray,
+    wavelet: Callable[[int, float], np.ndarray],
+    scales: np.ndarray,
+) -> np.ndarray:
+    """Compute the CWT coefficients using SciPy if available, otherwise fall back."""
+
+    data = np.asarray(signal_array, dtype=float)
+    data = data - np.mean(data)
+    if data.size == 0:
+        return np.zeros((len(scales), 0), dtype=np.complex128)
+
+    scales = np.asarray(scales, dtype=float)
+    if np.any(~np.isfinite(scales)):
+        raise ValueError("Scales must be finite real numbers")
+
+    if hasattr(signal, "cwt"):
+        try:
+            return signal.cwt(data, wavelet, scales)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            LOGGER.debug("scipy.signal.cwt failed (%s); falling back to numerical implementation.", exc)
+    return _fallback_cwt(data, wavelet, scales)
+
+
 def compute_cwt_features(signal_array: np.ndarray, sampling_rate: float, config: TimeFrequencyConfig) -> Dict[str, float]:
     """Return descriptive features derived from the CWT scalogram."""
 
@@ -161,26 +237,10 @@ def compute_cwt_features(signal_array: np.ndarray, sampling_rate: float, config:
             "tf_cwt_ridge_energy",
         )}
 
-    if not hasattr(signal, "cwt"):
-        global _CWT_UNAVAILABLE_WARNED
-        if not _CWT_UNAVAILABLE_WARNED:
-            LOGGER.warning("scipy.signal.cwt unavailable; skipping CWT-based features.")
-            _CWT_UNAVAILABLE_WARNED = True
-        return {key: 0.0 for key in (
-            "tf_cwt_total_energy",
-            "tf_cwt_entropy",
-            "tf_cwt_scale_mean",
-            "tf_cwt_scale_std",
-            "tf_cwt_scale_skew",
-            "tf_cwt_scale_kurt",
-            "tf_cwt_max_scale",
-            "tf_cwt_ridge_energy",
-        )}
-
     scales = np.linspace(config.cwt_min_scale, config.cwt_max_scale, config.cwt_num_scales)
     wavelet = _cwt_wavelet(config.cwt_wavelet)
     try:
-        coefficients = signal.cwt(signal_array - np.mean(signal_array), wavelet, scales)
+        coefficients = continuous_wavelet_transform(signal_array, wavelet, scales)
     except Exception as exc:
         LOGGER.warning("CWT computation failed: %s", exc)
         return {}
@@ -224,5 +284,7 @@ __all__ = [
     "TimeFrequencyConfig",
     "compute_stft_features",
     "compute_cwt_features",
+    "continuous_wavelet_transform",
+    "get_cwt_wavelet",
     "extract_time_frequency_features",
 ]
