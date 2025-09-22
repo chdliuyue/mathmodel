@@ -373,7 +373,7 @@ def plot_time_series_grid(
     summaries: Sequence,
     output_path: Path,
     config: SignalPlotConfig,
-    max_records: int = 4,
+    max_records: Optional[int] = 4,
     columns: int = 2,
 ) -> List[Tuple]:
     """Plot raw time-series signals for quick visual inspection."""
@@ -406,8 +406,12 @@ def plot_time_series_grid(
 
     records = diverse_records
     records = _prioritise_label_diversity(records)
-    if len(records) > max_records:
-        candidate_indices = sorted(set(np.linspace(0, len(records) - 1, num=max_records, dtype=int)))
+    limit = max_records
+    if limit is not None and limit <= 0:
+        limit = None
+
+    if limit is not None and len(records) > limit:
+        candidate_indices = sorted(set(np.linspace(0, len(records) - 1, num=limit, dtype=int)))
         selected: List[Tuple] = []
         seen_pairs: set[Tuple[str, str]] = set()
         for idx in candidate_indices:
@@ -418,19 +422,21 @@ def plot_time_series_grid(
             selected.append((summary, record))
             seen_pairs.add(key)
         # Fill remaining slots if rounding caused duplicates to be skipped.
-        if len(selected) < max_records:
+        if len(selected) < limit:
             for summary, record in records:
                 key = (summary.file_id, record.channel)
                 if key in seen_pairs:
                     continue
                 selected.append((summary, record))
                 seen_pairs.add(key)
-                if len(selected) >= max_records:
+                if len(selected) >= limit:
                     break
-        records = selected[:max_records]
+        records = selected[:limit]
     if columns <= 0:
         columns = 1
-    rows = ceil(len(records) / columns)
+    rows = ceil(len(records) / columns) if records else 0
+    if rows <= 0:
+        rows = 1
     fig, axes = plt.subplots(rows, columns, figsize=(14, 3.2 * rows), sharex=False)
     axes = np.atleast_1d(axes).reshape(rows, columns)
 
@@ -584,6 +590,11 @@ def compute_envelope_spectrum(
     envelope = np.abs(analytic)
     if envelope.size == 0:
         return np.asarray([]), np.asarray([])
+
+    mean_value = float(np.mean(envelope)) if envelope.size else 0.0
+    if not np.isclose(mean_value, 0.0):
+        envelope = envelope - mean_value
+
     window = np.hanning(len(envelope)) if envelope.size > 1 else np.ones_like(envelope)
     spectrum = np.abs(np.fft.rfft(envelope * window))
     freqs = np.fft.rfftfreq(envelope.size, d=1.0 / sampling_rate)

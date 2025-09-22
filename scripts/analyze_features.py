@@ -93,6 +93,82 @@ def _resolve_bearing_map(channel_mapping: Optional[Dict[str, Any]]) -> Dict[str,
     return bearings
 
 
+def _select_source_representatives(
+    summaries: Sequence[Any],
+    source_root: Path,
+) -> List[Any]:
+    """选择每个源数据文件夹的代表性样本，用于可视化。"""
+
+    if not summaries:
+        return []
+
+    resolved_root = source_root.resolve()
+    normals: List[Any] = []
+    selection: Dict[Tuple[str, str], Any] = {}
+
+    top_priority = ["12kHz_DE_data", "12kHz_FE_data", "48kHz_DE_data"]
+    category_priority = ["B", "IR", "OR_Centered", "OR_Opposite", "OR_Orthogonal"]
+
+    def _summary_path(summary: Any) -> Path:
+        raw_path = getattr(summary, "file_path", None)
+        if raw_path is None:
+            return Path(".")
+        return Path(raw_path)
+
+    for summary in sorted(summaries, key=lambda item: str(_summary_path(item))):
+        path = _summary_path(summary)
+        try:
+            relative = path.resolve().relative_to(resolved_root)
+        except Exception:
+            LOGGER.debug("无法解析 %s 相对于源数据根目录 %s 的路径", path, resolved_root)
+            relative = Path(path.name)
+
+        parts = relative.parts
+        if not parts:
+            continue
+        domain = parts[0]
+        if domain == "48kHz_Normal_data":
+            normals.append(summary)
+            continue
+
+        category: Optional[str] = None
+        if len(parts) >= 2:
+            second = parts[1]
+            if second in {"B", "IR"}:
+                category = second
+            elif second == "OR" and len(parts) >= 3:
+                category = f"OR_{parts[2]}"
+
+        if category is None:
+            continue
+
+        key = (domain, category)
+        if key not in selection:
+            selection[key] = summary
+
+    ordered: List[Any] = []
+    ordered.extend(sorted(normals, key=lambda item: str(_summary_path(item))))
+
+    for domain in top_priority:
+        for category in category_priority:
+            summary = selection.get((domain, category))
+            if summary is None:
+                LOGGER.warning("未在 %s 下找到类别 %s 的代表样本", domain, category)
+                continue
+            if summary not in ordered:
+                ordered.append(summary)
+
+    for summary in selection.values():
+        if summary not in ordered:
+            ordered.append(summary)
+
+    if not ordered:
+        LOGGER.warning("代表性样本选择为空，回退到全部源数据")
+        return list(summaries)
+    LOGGER.info("已为源数据选择 %d 个代表性样本", len(ordered))
+    return ordered
+
+
 def _render_detail_plots(
     domain_prefix: str,
     records: Sequence[Tuple[Any, Any]],
@@ -201,8 +277,11 @@ def analyse_features(
     config_path: Path,
     output_dir: Optional[Path] = None,
     analysis_dir: Optional[Path] = None,
-    max_records: int = 4,
+    max_records: Optional[int] = None,
     preview_seconds: float = 2.0,
+    target_max_records: Optional[int] = None,
+    source_max_records: Optional[int] = None,
+    source_preview_mode: str = "representative",
 ) -> None:
     config = _load_yaml(config_path)
     outputs = config.get("outputs", {})
@@ -291,11 +370,20 @@ def analyse_features(
         target_summaries = _load_target_summaries(target_config)
         if target_summaries:
             grid_path = analysis_root / "target_time_series_overview.png"
+            if target_max_records is not None:
+                target_limit = target_max_records
+            elif max_records is not None:
+                target_limit = max_records
+            else:
+                target_limit = len(target_summaries)
+            if target_limit is not None and target_limit <= 0:
+                target_limit = None
+
             target_records = plot_time_series_grid(
                 target_summaries,
                 grid_path,
                 signal_config,
-                max_records=max_records,
+                max_records=target_limit,
                 columns=2,
             )
             if grid_path.exists():
@@ -323,12 +411,30 @@ def analyse_features(
 
         source_summaries = _load_source_summaries(source_config)
         if source_summaries:
+            preview_mode = source_preview_mode.lower().strip()
+            if preview_mode == "representative":
+                source_root = Path(source_config.get("root", "sourceData"))
+                preview_summaries = _select_source_representatives(source_summaries, source_root)
+            else:
+                preview_summaries = list(source_summaries)
+
+            if source_max_records is not None:
+                source_limit = source_max_records
+            elif max_records is not None:
+                source_limit = max_records
+            elif preview_mode == "representative":
+                source_limit = len(preview_summaries)
+            else:
+                source_limit = None
+            if source_limit is not None and source_limit <= 0:
+                source_limit = None
+
             grid_path = analysis_root / "source_time_series_overview.png"
             source_records = plot_time_series_grid(
-                source_summaries,
+                preview_summaries,
                 grid_path,
                 signal_config,
-                max_records=max_records,
+                max_records=source_limit,
                 columns=2,
             )
             if grid_path.exists():
@@ -378,12 +484,36 @@ def main() -> None:
         default=None,
         help="Optional directory in which to store visualisations and reports.",
     )
-    parser.add_argument("--max-records", type=int, default=4, help="How many signals to include in grid visualisations.")
+    parser.add_argument(
+        "--max-records",
+        type=int,
+        default=None,
+        help="General limit for the number of signals shown in grid visualisations."
+        " 如果未指定，则根据数据域自动确定。",
+    )
     parser.add_argument(
         "--preview-seconds",
         type=float,
         default=2.0,
         help="Duration of each signal preview (seconds) in the time-domain plots.",
+    )
+    parser.add_argument(
+        "--target-max-records",
+        type=int,
+        default=None,
+        help="Override for the number of target signals to plot (<=0 显示全部)",
+    )
+    parser.add_argument(
+        "--source-max-records",
+        type=int,
+        default=None,
+        help="Override for the number of source signals to plot (<=0 显示全部)",
+    )
+    parser.add_argument(
+        "--source-preview-mode",
+        choices=["representative", "diverse"],
+        default="representative",
+        help="源数据可视化采样策略：representative 表示按文件夹挑选代表样本，diverse 表示保持原有的多样化采样。",
     )
 
     args = parser.parse_args()
@@ -395,6 +525,9 @@ def main() -> None:
         analysis_dir=args.analysis_dir,
         max_records=args.max_records,
         preview_seconds=args.preview_seconds,
+        target_max_records=args.target_max_records,
+        source_max_records=args.source_max_records,
+        source_preview_mode=args.source_preview_mode,
     )
 
 
