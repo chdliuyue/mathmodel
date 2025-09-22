@@ -14,12 +14,13 @@ from sklearn.base import clone
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, roc_curve, auc
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
+from sklearn.preprocessing import label_binarize
 
 from ...modeling import (
     AlignmentConfig,
@@ -32,6 +33,7 @@ from ...modeling import (
     TrainingResult,
     train_source_domain_model,
 )
+from ...analysis.feature_analysis import configure_chinese_font
 
 LOGGER = logging.getLogger(__name__)
 
@@ -262,6 +264,116 @@ def _evaluate_benchmarks(
     LOGGER.info("Benchmark comparison written to %s", comparison_path)
 
 
+def _plot_confusion_matrix_figure(confusion_df: pd.DataFrame, output_path: Path) -> None:
+    if confusion_df.empty:
+        LOGGER.warning("空的混淆矩阵，跳过可视化绘制")
+        return
+
+    configure_chinese_font()
+    import matplotlib.pyplot as plt
+
+    matrix = confusion_df.to_numpy(dtype=float)
+    classes = [str(label) for label in confusion_df.index]
+
+    row_sums = matrix.sum(axis=1, keepdims=True)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        normalised = np.divide(matrix, row_sums, out=np.zeros_like(matrix), where=row_sums != 0)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    titles = ["混淆矩阵（数量）", "混淆矩阵（行归一化）"]
+    datasets = [matrix, normalised]
+    formats = ["{:d}", "{:.2f}"]
+
+    for ax, data, title, value_format in zip(axes, datasets, titles, formats):
+        im = ax.imshow(data, cmap="Blues", vmin=0.0)
+        ax.set_xticks(np.arange(len(classes)))
+        ax.set_xticklabels(classes, rotation=45, ha="right")
+        ax.set_yticks(np.arange(len(classes)))
+        ax.set_yticklabels(classes)
+        ax.set_xlabel("预测标签")
+        ax.set_ylabel("真实标签")
+        ax.set_title(title)
+        for i in range(data.shape[0]):
+            for j in range(data.shape[1]):
+                value = data[i, j]
+                if value_format == "{:d}":
+                    text = value_format.format(int(round(value)))
+                else:
+                    text = value_format.format(value)
+                ax.text(j, i, text, ha="center", va="center", color="black", fontsize="small")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
+def _plot_multiclass_roc(result: TrainingResult, output_path: Path) -> None:
+    if result.y_proba is None:
+        LOGGER.warning("分类器未提供概率输出，跳过 ROC 曲线绘制")
+        return
+    if not result.classes:
+        LOGGER.warning("分类标签信息缺失，无法绘制 ROC 曲线")
+        return
+
+    try:
+        y_test_binarised = label_binarize(result.y_test, classes=result.classes)
+    except Exception as exc:
+        LOGGER.warning("无法对标签进行二值化处理：%s", exc)
+        return
+
+    if y_test_binarised.ndim == 1:
+        y_test_binarised = y_test_binarised.reshape(-1, 1)
+
+    configure_chinese_font()
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot([0, 1], [0, 1], linestyle="--", color="grey", label="随机猜测")
+
+    auc_scores: List[float] = []
+    probabilities = np.asarray(result.y_proba, dtype=float)
+    for idx, class_name in enumerate(result.classes):
+        y_true = y_test_binarised[:, idx]
+        if np.all(y_true == 0) or np.all(y_true == 1):
+            LOGGER.warning("测试集中类别 %s 缺少正负样本，跳过该曲线", class_name)
+            continue
+        fpr, tpr, _ = roc_curve(y_true, probabilities[:, idx])
+        score = auc(fpr, tpr)
+        auc_scores.append(score)
+        ax.plot(fpr, tpr, linewidth=1.6, label=f"{class_name} (AUC={score:.3f})")
+
+    if auc_scores:
+        micro_fpr, micro_tpr, _ = roc_curve(y_test_binarised.ravel(), probabilities.ravel())
+        micro_auc = auc(micro_fpr, micro_tpr)
+        ax.plot(
+            micro_fpr,
+            micro_tpr,
+            color="black",
+            linestyle=":",
+            linewidth=1.5,
+            label=f"Micro平均 (AUC={micro_auc:.3f})",
+        )
+        macro_auc = float(np.mean(auc_scores))
+        ax.text(0.6, 0.05, f"Macro平均AUC={macro_auc:.3f}", transform=ax.transAxes, fontsize="small")
+    else:
+        LOGGER.warning("所有类别均缺少正负样本对，无法生成 ROC 曲线")
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.02)
+    ax.set_xlabel("假阳性率 (FPR)")
+    ax.set_ylabel("真正率 (TPR)")
+    ax.set_title("多分类 ROC 曲线")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend(loc="lower right", fontsize="small")
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
 def _write_outputs(
     result: TrainingResult,
     output_dir: Path,
@@ -277,6 +389,8 @@ def _write_outputs(
     model_path = output_dir / outputs_config.get("model_path", "source_domain_model.joblib")
     summary_path = output_dir / outputs_config.get("feature_summary", "feature_summary.csv")
     features_used_path = output_dir / outputs_config.get("features_used", "features_used.txt")
+    confusion_plot_path = output_dir / outputs_config.get("confusion_matrix_plot", "confusion_matrix_heatmap.png")
+    roc_plot_path = output_dir / outputs_config.get("roc_curve_plot", "roc_curves.png")
 
     metrics_payload: Dict[str, Any] = {
         "train_accuracy": result.metrics.get("train_accuracy"),
@@ -316,6 +430,9 @@ def _write_outputs(
     with features_used_path.open("w", encoding="utf-8") as handle:
         for feature in result.feature_columns:
             handle.write(f"{feature}\n")
+
+    _plot_confusion_matrix_figure(result.confusion_matrix, confusion_plot_path)
+    _plot_multiclass_roc(result, roc_plot_path)
 
 
 def run_training(

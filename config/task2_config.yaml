@@ -47,12 +47,14 @@ outputs:
   metrics_file: metrics.json
   classification_report: classification_report.csv
   confusion_matrix: confusion_matrix.csv
+  confusion_matrix_plot: confusion_matrix_heatmap.png
   coefficient_importance: coefficient_importance.csv
   permutation_importance: permutation_importance.csv
   predictions: predictions.csv
   model_path: source_domain_model.joblib
   feature_summary: feature_summary.csv
   features_used: features_used.txt
+  roc_curve_plot: roc_curves.png
   model_comparison: model_comparison.csv
 
 benchmarks:
