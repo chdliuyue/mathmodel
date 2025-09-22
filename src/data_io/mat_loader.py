@@ -192,7 +192,7 @@ def load_source_file(path: Path, default_sampling_rate: float = 12000.0) -> Opti
     variables = load_mat_variables(path)
     channels = extract_signal_channels(variables)
     if not channels:
-        LOGGER.warning("No vibration channels found in %s", path)
+        LOGGER.warning("文件 %s 中未找到振动信号通道", path)
         return None
 
     rpm = extract_rpm(variables)
@@ -231,7 +231,7 @@ def load_source_file(path: Path, default_sampling_rate: float = 12000.0) -> Opti
 
 def load_source_directory(root: Path, pattern: str = "**/*.mat", default_sampling_rate: float = 12000.0) -> List[FileSummary]:
     if not root.exists():
-        LOGGER.warning("Source directory %s does not exist", root)
+        LOGGER.warning("源域目录 %s 不存在", root)
         return []
 
     files: List[FileSummary] = []
@@ -246,7 +246,7 @@ def load_target_file(path: Path, sampling_rate: float, rpm: Optional[float]) -> 
     variables = load_mat_variables(path)
     channels = extract_signal_channels(variables)
     if not channels:
-        LOGGER.warning("Target file %s did not yield a signal channel", path)
+        LOGGER.warning("目标域文件 %s 未解析出振动通道", path)
         return None
 
     # Target domain MAT files contain only a single channel, we keep the first.
@@ -276,7 +276,7 @@ def load_target_file(path: Path, sampling_rate: float, rpm: Optional[float]) -> 
 
 def load_target_directory(root: Path, sampling_rate: float, rpm: Optional[float], pattern: str = "*.mat") -> List[FileSummary]:
     if not root.exists():
-        LOGGER.warning("Target directory %s does not exist", root)
+        LOGGER.warning("目标域目录 %s 不存在", root)
         return []
 
     files: List[FileSummary] = []

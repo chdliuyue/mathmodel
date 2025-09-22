@@ -85,10 +85,10 @@
 运行示例：
 
 ```bash
-python scripts/analyze_features.py --config config/dataset_config.yaml --max-records 6 --preview-seconds 3
+python scripts/analyze_features.py --config config/dataset_config.yaml --preview-seconds 3
 ```
 
-输出默认存放在 `artifacts/analysis/` 目录，可通过参数 `--analysis-dir` 自定义位置。
+脚本会自动展示 16 条目标域信号与 19 个源域代表样本（`48kHz_Normal_data` 全部 4 条 + `12kHz_DE_data`/`12kHz_FE_data`/`48kHz_DE_data` 各自的 B、IR 以及 OR-`Centered`/`Opposite`/`Orthogonal` 组合，共 4 + 5×3 条），确保各工况都能在预览图中出现。输出默认存放在 `artifacts/analysis/` 目录，可通过参数 `--analysis-dir` 自定义位置。
 
 ## 执行流程回顾与结果核对
 

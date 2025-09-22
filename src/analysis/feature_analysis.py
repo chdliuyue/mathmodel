@@ -94,7 +94,7 @@ def load_feature_table(path: Path, dataset_name: Optional[str] = None) -> pd.Dat
     """Load a CSV feature table if it exists, returning an empty frame otherwise."""
 
     if not path.exists():
-        LOGGER.warning("Feature table %s does not exist", path)
+        LOGGER.warning("未找到特征表文件：%s", path)
         return pd.DataFrame()
 
     frame = pd.read_csv(path)
@@ -144,7 +144,7 @@ def compute_feature_statistics(
 
     feature_cols = select_feature_columns(frame, prefixes=prefixes)
     if not feature_cols:
-        LOGGER.warning("No feature columns found to summarise")
+        LOGGER.warning("未检索到可供汇总的特征列")
         return pd.DataFrame()
 
     numeric = frame[feature_cols]
@@ -188,22 +188,22 @@ def run_tsne(frame: pd.DataFrame, prefixes: Sequence[str] = FEATURE_PREFIXES, ra
     """Project features to 2-D using t-SNE."""
 
     if frame.empty:
-        LOGGER.warning("Cannot compute t-SNE embedding on an empty frame")
+        LOGGER.warning("特征表为空，无法计算 t-SNE 嵌入")
         return None
 
     scaled = _standardise_features(frame, prefixes=prefixes)
     n_samples = len(scaled)
     if n_samples < 5:
-        LOGGER.warning("Not enough samples (%s) for t-SNE", n_samples)
+        LOGGER.warning("样本数量不足（%s 条），无法计算 t-SNE", n_samples)
         return None
 
     perplexity = min(30, max(5, (n_samples - 1) / 3))
     perplexity = min(perplexity, n_samples - 1)
     if perplexity <= 0:
-        LOGGER.warning("Computed perplexity %.3f is not valid", perplexity)
+        LOGGER.warning("计算得到的困惑度 %.3f 非法", perplexity)
         return None
 
-    LOGGER.info("Running t-SNE on %s samples with perplexity %.2f", n_samples, perplexity)
+    LOGGER.info("正在基于 %s 条样本运行 t-SNE，困惑度为 %.2f", n_samples, perplexity)
     tsne = TSNE(n_components=2, perplexity=perplexity, random_state=random_state, init="random")
     embedding = tsne.fit_transform(scaled)
     result = EmbeddingResult(embedding=embedding, data=frame.reset_index(drop=True), method="tsne")
@@ -222,24 +222,24 @@ def run_umap(
     try:
         import umap  # type: ignore
     except ImportError:  # pragma: no cover - optional dependency
-        LOGGER.warning("Skipping UMAP embedding because umap-learn is not installed")
+        LOGGER.warning("由于缺少 umap-learn 依赖，跳过 UMAP 嵌入计算")
         return None
 
     if frame.empty:
-        LOGGER.warning("Cannot compute UMAP embedding on an empty frame")
+        LOGGER.warning("特征表为空，无法计算 UMAP 嵌入")
         return None
 
     scaled = _standardise_features(frame, prefixes=prefixes)
     n_samples = len(scaled)
     if n_samples < 5:
-        LOGGER.warning("Not enough samples (%s) for UMAP", n_samples)
+        LOGGER.warning("样本数量不足（%s 条），无法计算 UMAP", n_samples)
         return None
 
     if n_neighbors is None:
         n_neighbors = min(15, max(2, int(n_samples / 10)))
     n_neighbors = min(n_neighbors, n_samples - 1)
 
-    LOGGER.info("Running UMAP on %s samples with %s neighbours", n_samples, n_neighbors)
+    LOGGER.info("正在基于 %s 条样本运行 UMAP，邻居数设为 %s", n_samples, n_neighbors)
     reducer = umap.UMAP(
         n_components=2,
         n_neighbors=n_neighbors,
@@ -382,7 +382,7 @@ def plot_time_series_grid(
     import matplotlib.pyplot as plt
 
     if not summaries:
-        LOGGER.warning("No summaries provided for time-series grid plot")
+        LOGGER.warning("未提供任何信号摘要，无法绘制时序网格图")
         return []
 
     records: List = []
@@ -390,7 +390,7 @@ def plot_time_series_grid(
         for record in summary.records:
             records.append((summary, record))
     if not records:
-        LOGGER.warning("Summaries did not contain any signal records")
+        LOGGER.warning("信号摘要中不包含任何记录")
         return []
 
     # Prioritise diversity by keeping the first occurrence of each file before truncation.
@@ -537,24 +537,24 @@ def plot_covariance_heatmap(
     """Plot a covariance heatmap highlighting feature interdependence."""
 
     if frame.empty:
-        LOGGER.warning("Empty frame supplied to covariance heatmap; skipping")
+        LOGGER.warning("输入数据为空，跳过协方差热图绘制")
         return
 
     feature_cols = select_feature_columns(frame, prefixes=prefixes)
     if not feature_cols:
-        LOGGER.warning("No feature columns found for covariance heatmap")
+        LOGGER.warning("缺少可用于协方差热图的特征列")
         return
 
     features = frame[feature_cols].copy()
     variances = features.var(axis=0, ddof=0)
     variances = variances[variances > 1e-12].sort_values(ascending=False)
     if variances.empty:
-        LOGGER.warning("All candidate features are near-constant; skipping covariance heatmap")
+        LOGGER.warning("候选特征几乎为常数，跳过协方差热图绘制")
         return
     selected_cols = variances.index[:max_features]
     selected = features[selected_cols].fillna(features[selected_cols].mean()).to_numpy(dtype=float)
     if selected.size == 0:
-        LOGGER.warning("Selected feature subset is empty; skipping covariance heatmap")
+        LOGGER.warning("筛选后的特征子集为空，跳过协方差热图绘制")
         return
     correlation = np.corrcoef(selected, rowvar=False)
 

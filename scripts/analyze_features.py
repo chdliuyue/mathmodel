@@ -6,6 +6,7 @@ import logging
 import math
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -97,7 +98,7 @@ def _select_source_representatives(
     summaries: Sequence[Any],
     source_root: Path,
 ) -> List[Any]:
-    """选择每个源数据文件夹的代表性样本，用于可视化。"""
+    """按“4 + 5×3”策略为源数据选择代表性样本（共 19 条）。"""
 
     if not summaries:
         return []
@@ -108,6 +109,13 @@ def _select_source_representatives(
 
     top_priority = ["12kHz_DE_data", "12kHz_FE_data", "48kHz_DE_data"]
     category_priority = ["B", "IR", "OR_Centered", "OR_Opposite", "OR_Orthogonal"]
+    category_labels = {
+        "B": "B（滚动体）",
+        "IR": "IR（内圈）",
+        "OR_Centered": "OR-Centered（外圈-对中）",
+        "OR_Opposite": "OR-Opposite（外圈-反向）",
+        "OR_Orthogonal": "OR-Orthogonal（外圈-正交）",
+    }
 
     def _summary_path(summary: Any) -> Path:
         raw_path = getattr(summary, "file_path", None)
@@ -147,7 +155,11 @@ def _select_source_representatives(
             selection[key] = summary
 
     ordered: List[Any] = []
-    ordered.extend(sorted(normals, key=lambda item: str(_summary_path(item))))
+    normals_sorted = sorted(normals, key=lambda item: str(_summary_path(item)))
+    max_normals = 4
+    if len(normals_sorted) > max_normals:
+        LOGGER.info("48kHz_Normal_data 共检测到 %d 条信号，仅展示前 %d 条作为代表", len(normals_sorted), max_normals)
+    ordered.extend(normals_sorted[:max_normals])
 
     for domain in top_priority:
         for category in category_priority:
@@ -158,14 +170,73 @@ def _select_source_representatives(
             if summary not in ordered:
                 ordered.append(summary)
 
-    for summary in selection.values():
+    for _key, summary in selection.items():
         if summary not in ordered:
             ordered.append(summary)
 
     if not ordered:
         LOGGER.warning("代表性样本选择为空，回退到全部源数据")
         return list(summaries)
-    LOGGER.info("已为源数据选择 %d 个代表性样本", len(ordered))
+
+    breakdown: Dict[str, List[str]] = defaultdict(list)
+    for summary in ordered:
+        path = _summary_path(summary)
+        try:
+            relative = path.resolve().relative_to(resolved_root)
+        except Exception:
+            relative = Path(path.name)
+
+        parts = relative.parts
+        if not parts:
+            continue
+        domain = parts[0]
+        if domain == "48kHz_Normal_data":
+            breakdown[domain].append(getattr(summary, "file_id", path.stem))
+            continue
+
+        category_name = "未识别类别"
+        if len(parts) >= 2:
+            second = parts[1]
+            if second in {"B", "IR"}:
+                category_name = category_labels.get(second, second)
+            elif second == "OR" and len(parts) >= 3:
+                category_key = f"OR_{parts[2]}"
+                category_name = category_labels.get(category_key, category_key)
+        breakdown[domain].append(category_name)
+
+    normal_count = len(breakdown.get("48kHz_Normal_data", []))
+    if normal_count:
+        breakdown["48kHz_Normal_data"] = [f"共 {normal_count} 条"]
+
+    segments: List[str] = []
+    if "48kHz_Normal_data" in breakdown:
+        segments.append(f"48kHz_Normal_data×{normal_count}")
+
+    for domain in top_priority:
+        items = breakdown.get(domain)
+        if not items:
+            continue
+        segments.append(f"{domain}：{', '.join(items)}")
+
+    for domain, items in sorted(breakdown.items()):
+        if domain == "48kHz_Normal_data" or domain in top_priority:
+            continue
+        segments.append(f"{domain}：{', '.join(items)}")
+
+    breakdown_text = "; ".join(segments) if segments else "未识别到具体目录结构"
+    expected_total = 19
+    LOGGER.info(
+        "已为源数据选择 %d 个代表性样本（目标 %d = 4 + 5×3）。分布：%s",
+        len(ordered),
+        expected_total,
+        breakdown_text,
+    )
+    if len(ordered) != expected_total:
+        LOGGER.warning(
+            "代表性样本数量 %d 未达到预期 %d（4 + 5×3），请检查源数据目录是否完整",
+            len(ordered),
+            expected_total,
+        )
     return ordered
 
 
@@ -191,12 +262,12 @@ def _render_detail_plots(
         diag_path = analysis_root / f"{base_name}_diagnostics.png"
         plot_signal_diagnostics(summary, record, diag_path, signal_config)
         if diag_path.exists():
-            LOGGER.info("Saved %s diagnostic plot to %s", domain_prefix, diag_path)
+            LOGGER.info("%s 诊断图已保存至 %s", domain_prefix, diag_path)
 
         window_path = analysis_root / f"{base_name}_窗序折线.png"
         plot_window_sequence(summary, record, window_path, signal_config)
         if window_path.exists():
-            LOGGER.info("Saved %s window sequence plot to %s", domain_prefix, window_path)
+            LOGGER.info("%s 窗序折线图已保存至 %s", domain_prefix, window_path)
 
         envelope_path = analysis_root / f"{base_name}_包络谱.png"
         channel_key = str(getattr(record, "channel", "")).upper()
@@ -225,12 +296,12 @@ def _render_detail_plots(
             summary_copy["转速(rpm)"] = rpm_value
             verification_records.append(summary_copy)
         if envelope_path.exists():
-            LOGGER.info("Saved %s envelope spectrum to %s", domain_prefix, envelope_path)
+            LOGGER.info("%s 包络谱已保存至 %s", domain_prefix, envelope_path)
 
         saliency_path = analysis_root / f"{base_name}_时频显著性.png"
         plot_time_frequency_saliency(summary, record, saliency_path, signal_config)
         if saliency_path.exists():
-            LOGGER.info("Saved %s time-frequency saliency heatmap to %s", domain_prefix, saliency_path)
+            LOGGER.info("%s 时频显著性图已保存至 %s", domain_prefix, saliency_path)
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -261,7 +332,7 @@ def _load_target_summaries(config: Dict[str, Any]):
     sampling_rate = float(config.get("sampling_rate", 32000))
     rpm_value = config.get("rpm")
     rpm = float(rpm_value) if rpm_value is not None else None
-    LOGGER.info("Loading target signals from %s", root)
+    LOGGER.info("正在从 %s 载入目标域信号", root)
     return load_target_directory(root, sampling_rate=sampling_rate, rpm=rpm, pattern=pattern)
 
 
@@ -269,7 +340,7 @@ def _load_source_summaries(config: Dict[str, Any]):
     root = Path(config.get("root", "sourceData"))
     pattern = config.get("pattern", "**/*.mat")
     default_sampling_rate = float(config.get("default_sampling_rate", 12000))
-    LOGGER.info("Loading source signals from %s", root)
+    LOGGER.info("正在从 %s 载入源域信号", root)
     return load_source_directory(root, pattern=pattern, default_sampling_rate=default_sampling_rate)
 
 
@@ -305,57 +376,57 @@ def analyse_features(
     frames = [frame for frame in [source_features, target_features] if frame is not None]
     combined = prepare_combined_features(frames)
     if combined.empty:
-        LOGGER.warning("No feature tables available for analysis")
+        LOGGER.warning("未找到可供分析的特征表")
     else:
         stats = compute_feature_statistics(combined)
         if not stats.empty:
             stats_localised = translate_statistics_columns(stats)
             stats_path = analysis_root / "特征统计汇总.csv"
-            LOGGER.info("Writing feature statistics to %s", stats_path)
+            LOGGER.info("正在写出特征统计表：%s", stats_path)
             _save_dataframe_chinese(stats_localised, stats_path)
         else:
-            LOGGER.warning("Feature statistics could not be computed")
+            LOGGER.warning("无法计算特征统计量")
 
         tsne_result = run_tsne(combined)
         if tsne_result:
             tsne_path = analysis_root / "tsne_embedding.png"
             plot_embedding(tsne_result, tsne_path, title="t-SNE 特征嵌入")
-            LOGGER.info("Saved t-SNE visualisation to %s", tsne_path)
+            LOGGER.info("t-SNE 嵌入图已保存至 %s", tsne_path)
 
         umap_result = run_umap(combined)
         if umap_result:
             umap_path = analysis_root / "umap_embedding.png"
             plot_embedding(umap_result, umap_path, title="UMAP 特征嵌入")
-            LOGGER.info("Saved UMAP visualisation to %s", umap_path)
+            LOGGER.info("UMAP 嵌入图已保存至 %s", umap_path)
 
         cov_path = analysis_root / "特征协方差热图.png"
         plot_covariance_heatmap(combined, cov_path)
         if cov_path.exists():
-            LOGGER.info("Saved covariance heatmap to %s", cov_path)
+            LOGGER.info("特征协方差热图已保存至 %s", cov_path)
 
         alignment = compute_domain_alignment_metrics(combined)
         if not alignment.empty:
             alignment_path = analysis_root / "域对齐指标.csv"
-            LOGGER.info("Writing domain alignment metrics to %s", alignment_path)
+            LOGGER.info("正在写出域对齐指标：%s", alignment_path)
             _save_dataframe_chinese(alignment, alignment_path)
 
         importance_path = analysis_root / "特征重要度.png"
         importance_df = compute_feature_importance(combined, importance_path)
         if importance_df is not None and not importance_df.empty:
             if importance_path.exists():
-                LOGGER.info("Saved feature importance plot to %s", importance_path)
+                LOGGER.info("特征重要度图已保存至 %s", importance_path)
             importance_table = analysis_root / "特征重要度.csv"
-            LOGGER.info("Writing feature importance table to %s", importance_table)
+            LOGGER.info("正在写出特征重要度表：%s", importance_table)
             _save_dataframe_chinese(importance_df, importance_table)
 
         combined_report = translate_statistics_columns(combined)
         combined_path = analysis_root / "特征整合表.csv"
-        LOGGER.info("Writing combined feature table to %s", combined_path)
+        LOGGER.info("正在写出特征整合表：%s", combined_path)
         _save_dataframe_chinese(combined_report, combined_path)
 
         dictionary_path = analysis_root / "特征中英文对照表.csv"
         dictionary = build_feature_dictionary(combined.columns)
-        LOGGER.info("Writing bilingual feature dictionary to %s", dictionary_path)
+        LOGGER.info("正在写出特征中英文对照表：%s", dictionary_path)
         _save_dataframe_chinese(dictionary, dictionary_path)
 
     signal_config = SignalPlotConfig(preview_seconds=preview_seconds)
@@ -387,7 +458,7 @@ def analyse_features(
                 columns=2,
             )
             if grid_path.exists():
-                LOGGER.info("Saved target time-series overview to %s", grid_path)
+                LOGGER.info("目标域时序概览图已保存至 %s", grid_path)
             if target_records:
                 _render_detail_plots(
                     "target",
@@ -398,9 +469,9 @@ def analyse_features(
                     verification_records,
                 )
             else:
-                LOGGER.warning("No target signal records available for detailed plots")
+                LOGGER.warning("目标域信号记录为空，无法绘制详细图像")
         else:
-            LOGGER.warning("No target signals found for time-series visualisation")
+            LOGGER.warning("未找到可用于时序可视化的目标域信号")
 
     source_config = config.get("source")
     if source_config:
@@ -438,7 +509,7 @@ def analyse_features(
                 columns=2,
             )
             if grid_path.exists():
-                LOGGER.info("Saved source time-series overview to %s", grid_path)
+                LOGGER.info("源域时序概览图已保存至 %s", grid_path)
             if source_records:
                 _render_detail_plots(
                     "source",
@@ -449,9 +520,9 @@ def analyse_features(
                     verification_records,
                 )
             else:
-                LOGGER.warning("No source signal records available for detailed plots")
+                LOGGER.warning("源域信号记录为空，无法绘制详细图像")
         else:
-            LOGGER.warning("No source signals found for time-series visualisation")
+            LOGGER.warning("未找到可用于时序可视化的源域信号")
 
     if verification_records:
         verification_df = pd.concat(verification_records, ignore_index=True)
@@ -469,51 +540,49 @@ def analyse_features(
         }
         verification_df = verification_df.rename(columns=rename_map)
         verification_path = analysis_root / "故障特征频率验证.csv"
-        LOGGER.info("Writing fault frequency verification table to %s", verification_path)
+        LOGGER.info("正在写出故障特征频率验证表：%s", verification_path)
         _save_dataframe_chinese(verification_df, verification_path)
 
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Create analysis artefacts for extracted bearing features.")
-    parser.add_argument("--config", type=Path, default=Path("config/dataset_config.yaml"), help="Path to the YAML configuration file.")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Override the directory that stores feature CSV files.")
+    parser = argparse.ArgumentParser(description="生成任务1特征分析的图表与报表。")
+    parser.add_argument("--config", type=Path, default=Path("config/dataset_config.yaml"), help="指定数据配置的 YAML 文件路径。")
+    parser.add_argument("--output-dir", type=Path, default=None, help="覆盖特征 CSV 文件所在的目录。")
     parser.add_argument(
         "--analysis-dir",
         type=Path,
         default=None,
-        help="Optional directory in which to store visualisations and reports.",
+        help="自定义可视化图表与分析报表的输出目录。",
     )
     parser.add_argument(
         "--max-records",
         type=int,
         default=None,
-        help="General limit for the number of signals shown in grid visualisations."
-        " 如果未指定，则根据数据域自动确定。",
+        help="控制时序网格图展示的信号数量上限；未设置时，将自动按数据域确定数量。",
     )
     parser.add_argument(
         "--preview-seconds",
         type=float,
         default=2.0,
-        help="Duration of each signal preview (seconds) in the time-domain plots.",
+        help="时域图每条信号预览的秒数，可根据需求放大细节。",
     )
     parser.add_argument(
         "--target-max-records",
         type=int,
         default=None,
-        help="Override for the number of target signals to plot (<=0 显示全部)",
+        help="单独覆盖目标域信号的展示数量（<=0 表示展示全部）。",
     )
     parser.add_argument(
         "--source-max-records",
         type=int,
         default=None,
-        help="Override for the number of source signals to plot (<=0 显示全部)",
+        help="单独覆盖源域信号的展示数量（<=0 表示展示全部）。",
     )
     parser.add_argument(
         "--source-preview-mode",
         choices=["representative", "diverse"],
         default="representative",
-        help="源数据可视化采样策略：representative 表示按文件夹挑选代表样本，diverse 表示保持原有的多样化采样。",
+        help="源数据可视化采样策略：representative=按目录挑选 19 条代表样本（48kHz_Normal×4 + 三个故障目录各 5 条），diverse=使用完整样本集。",
     )
 
     args = parser.parse_args()
