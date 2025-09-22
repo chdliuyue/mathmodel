@@ -72,7 +72,16 @@ LABEL_MAP = {
 
 SIZE_PATTERN = re.compile(r"(IR|OR|B)(\d{3})", re.IGNORECASE)
 LOAD_PATTERN = re.compile(r"_(?P<load>[0-3])(?!\d)|(?P<hp>[0-3])HP", re.IGNORECASE)
-LABEL_PATTERN = re.compile(r"\b(IR|OR|B|NORMAL|N)\b", re.IGNORECASE)
+# The Case Western style file names often use underscores or brackets around the
+# fault code (e.g. ``N_1_(1772rpm).mat``).  ``re`` considers ``_`` to be a word
+# character, which would cause ``\b`` word boundaries to miss such patterns.  The
+# custom look-around based pattern below treats transitions between alpha-numeric
+# characters and any other character (including underscores) as valid
+# boundaries so that plain ``N`` files are still interpreted as the "normal"
+# class.
+LABEL_PATTERN = re.compile(
+    r"(?<![A-Z0-9])(IR|OR|B|NORMAL|N)(?![A-Z0-9])", re.IGNORECASE
+)
 
 
 def _clean_value(value: Any) -> Any:
