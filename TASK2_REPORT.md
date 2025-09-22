@@ -76,13 +76,21 @@ CORAL 特征对齐（CoralAligner）
 4. **查看输出**：训练结果默认写入 `artifacts/task2/`，具体文件说明见 README 表格。
 5. **复用模型**：加载 `source_domain_model.joblib` 即可在新数据上执行推理，若需要迁移，可先调用 `CoralAligner.set_target_statistics` 更新目标域统计量后再预测。
 
-## 6. 结果解读建议
+## 6. 输出产物与结果核查
+
+- **指标文件**：`metrics.json` 汇总训练/测试准确率、宏平均 F1、交叉验证均值与方差、CORAL 对齐诊断指标，可直接写入技术报告；若存在 `alignment` 小节，说明 CORAL 白化未完全收敛，需要结合 `epsilon` 或特征预处理调参。
+- **解释性报表**：`coefficient_importance.csv` 与 `permutation_importance.csv`（如启用）提供线性权重与置换重要度两种视角，可交叉验证哪些特征对分类最敏感；`feature_summary.csv` 给出模型实际使用特征的统计范围，便于发现异常值。
+- **可视化输出**：脚本自动生成 `confusion_matrix_heatmap.png` 与 `roc_curves.png`。前者可直接用于 PPT/报告，后者可帮助评估阈值策略、挑选工作点。
+- **模型持久化**：`source_domain_model.joblib` 内嵌完整 Pipeline（缺失值填补、CORAL、标准化、分类器）。验证模型时可执行 `joblib.load` 并调用 `predict`、`predict_proba`，确认推理阶段与训练一致。
+- **基线对比**：若配置了 `benchmarks`，会生成 `model_comparison.csv`。建议重点关注与主模型差距较大的模型，思考是否需要组合或引入更强的非线性模型。
+
+## 7. 结果解读建议
 
 * **比较系数与物理机理**：例如 `bpfo_energy` 对外圈故障应呈现正向贡献；若出现反常，可回溯特征提取或数据质量。
 * **关注对齐诊断**：`whiten_identity_fro_error` 越接近 0 表明 CORAL 白化越充分；若值较大，说明某些特征仍存在较强相关性，可考虑特征降维或正则化。
 * **利用预测概率**：可进一步绘制可靠性曲线、设定告警阈值，或为任务3的伪标签策略提供依据。
 
-## 7. 后续拓展方向
+## 8. 后续拓展方向
 
 * 在当前线性模型基础上引入非线性方法（如 Gradient Boosting、1D CNN），并保持 CORAL/可解释性模块的可复用性；
 * 结合目标域少量标注样本，验证 `CoralAligner` 的快速自适应能力，并探索多源统计量融合策略；

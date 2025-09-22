@@ -35,7 +35,14 @@ python scripts/run_task4_interpretability.py \
 - 三张 PNG 图对应该三张表格，便于直接放入报告或演示文稿。
 - `interpretability_summary.json` 汇总了特征数量、伪标签规模、局部解释所选样本等关键信息。
 
-## 3. 分析建议
+## 3. 成果核查与实践经验
+
+- **全局解释审阅**：打开 `global_feature_effects.csv` 后，可按“重要性”列排序，确认关键特征与任务1/2的数据字典保持一致。配套的 `global_importance.png` 采用中文标注，可直接插入汇报材料。
+- **域偏移排查**：`domain_shift_contributions.csv` 的 `Logit贡献` 列越大，说明该特征对域偏移影响越强。结合 `domain_shift.png` 的正负条形图，可以迅速定位需要重新对齐或归一化的特征。
+- **局部解释复核**：`local_explanation.csv` 中的 `贡献值` 列与 `local_explanation.png` 的条形图互为验证。建议将同一故障的多个样本加入 `indices` 配置，生成 `local_cluster_heatmap.png`，观察贡献模式是否稳定。
+- **指标总结**：`interpretability_summary.json` 提供本次解释任务的统计信息（特征数量、伪标签规模、聚类数量等），方便在实验记录表中登记，形成可追溯的实验链路。
+
+## 4. 分析建议
 
 1. **全局层面**：
    - 对比 `global_feature_effects.csv` 与任务1/2的特征翻译词典，验证高权重特征是否符合轴承机理（如 `fault_bpfo_band_energy` 对外圈故障应为正贡献）。
@@ -49,12 +56,12 @@ python scripts/run_task4_interpretability.py \
    - 通过 `local_explanation.csv` 可以快速锁定某条告警的关键特征，若贡献主要来自时频特征，说明多模态增强发挥作用。
    - 可多选几个样本（修改配置中的 `index` 和 `class`）比较不同故障的贡献模式，以形成经验库。
 
-## 4. 与任务3的衔接
+## 5. 与任务3的衔接
 
 - `scripts/run_task4_interpretability.py` 内部会复用任务3相同的配置解析逻辑并重新运行 `run_transfer_learning`，保证解释结果与最新模型保持一致。
 - 若已执行任务3并生成 `transfer_model.joblib` 等输出，可直接将其作为先验，或在任务4中调整配置再次训练，以便开展“对照试验”（例如关闭伪标签、仅保留时域特征等）。
 
-## 5. 后续拓展方向
+## 6. 后续拓展方向
 
 - **更细粒度的局部解释**：可在 `explain_instance` 基础上，引入 SHAP/LIME 等方法，对非线性模型或深度模型进行扩展。
 - **跨样本对比**：对多条样本的贡献结果进行聚类或可视化，挖掘不同故障类型在目标域的共性差异。

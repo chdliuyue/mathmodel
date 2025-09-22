@@ -90,6 +90,13 @@ python scripts/analyze_features.py --config config/dataset_config.yaml --max-rec
 
 输出默认存放在 `artifacts/analysis/` 目录，可通过参数 `--analysis-dir` 自定义位置。
 
+## 执行流程回顾与结果核对
+
+- **运行流程**：建议首先执行 `python scripts/extract_features.py --config config/dataset_config.yaml`。脚本会在启动时打印配置摘要，并在每个阶段输出进度（已筛选的源域文件数量、分段窗口设置、特征计算状态等），便于核对是否加载了预期的数据目录。
+- **结果核查**：流程结束后应在输出目录（默认 `artifacts/task1/`）看到四张 CSV（源/目标特征表与元数据）。其中 `*_metadata.csv` 记录了筛选得分、轴承尺寸、采样率等关键指标，可与 CWRU 原始命名或竞赛数据清单逐项比对。
+- **一致性验证**：配合 `scripts/analyze_features.py` 的统计与可视化输出，可以快速审查源域/目标域之间的均值、方差、特征分布差异；若发现异常（如某些频带能量始终为 0），可回溯到 `feature_engineering` 模块定位问题。
+- **再利用指引**：任务1生成的 CSV 是任务2-4 的统一输入，只要保持列名一致，即可在不同实验中复用；若更换数据源，仅需调整 YAML 配置并重新运行本流程。
+
 ## 成果意义
 
 - **源域筛选**使得后续迁移学习建立在与目标工况更相似的数据上，减少域间差异；
