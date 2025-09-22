@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from src.analysis.feature_analysis import configure_chinese_font, plot_embedding, run_tsne
-from src.analysis.feature_dictionary import build_feature_dictionary
+from src.analysis.feature_dictionary import LABEL_DISPLAY_MAP, build_feature_dictionary
 from src.tasks.task3 import (
     TimeFrequencyConfig,
     TransferConfig,
@@ -47,6 +48,7 @@ MODAL_NAME_MAP = {
     "cwt": "连续小波",
     "mel": "梅尔",
 }
+COLUMN_LABEL_MAP = {key: value for key, value in LABEL_DISPLAY_MAP.items()}
 COLUMN_NAME_MAP = {
     "iteration": "迭代轮次",
     "new_samples": "新增伪标签数",
@@ -72,6 +74,8 @@ COLUMN_NAME_MAP = {
     "start_sample": "起始样本点",
     "end_sample": "结束样本点",
     "rpm": "转速",
+    "true_label": "真实标签",
+    "label": "标签编码",
     "time_vote": "时域模态投票",
     "stft_vote": "STFT模态投票",
     "cwt_vote": "CWT模态投票",
@@ -93,7 +97,8 @@ def _translate_column_name(column: str) -> str:
         return mapped
     if column.startswith("probability_"):
         label = column[len("probability_") :]
-        return f"类别概率_{label}"
+        display = COLUMN_LABEL_MAP.get(label, label)
+        return f"类别概率_{display}"
     if column.endswith("_vote"):
         prefix = column[: -len("_vote")]
         modal = MODAL_NAME_MAP.get(prefix, prefix)
@@ -113,7 +118,18 @@ def _translate_columns(frame: pd.DataFrame) -> pd.DataFrame:
     if frame is None or frame.empty:
         return frame
     renamed = {column: _translate_column_name(column) for column in frame.columns}
-    return frame.rename(columns=renamed)
+    translated = frame.rename(columns=renamed)
+    label_translation_pairs = {
+        "模型预测标签": "模型预测标签(中文)",
+        "真实标签": "真实标签(中文)",
+        "标签编码": "标签",
+    }
+    for source_column, target_column in label_translation_pairs.items():
+        if source_column in translated.columns and target_column not in translated.columns:
+            translated[target_column] = translated[source_column].map(
+                lambda value: COLUMN_LABEL_MAP.get(str(value), str(value)) if pd.notna(value) else value
+            )
+    return translated
 
 
 def _build_transfer_config(raw: Dict[str, Any]) -> TransferConfig:
@@ -139,18 +155,42 @@ def _plot_pseudo_history(history: Optional[List[Dict[str, float]]], path: Path) 
     configure_chinese_font()
     import matplotlib.pyplot as plt
 
-    fig, ax1 = plt.subplots(figsize=(9.5, 5.2))
-    iterations = frame["iteration"].to_numpy()
-    bars = ax1.bar(iterations, frame["new_samples"], color="#4c72b0", alpha=0.75, label="新增伪标签数")
-    ax1.plot(iterations, frame["cumulative_pseudo"], color="#dd8452", marker="o", linewidth=1.6, label="累计伪标签数")
-    ax1.set_xlabel("迭代轮次")
-    ax1.set_ylabel("样本数量")
-    ax1.set_xticks(iterations)
-    ax1.grid(True, linestyle="--", alpha=0.3)
+    iterations = frame["iteration"].astype(float).to_numpy()
+    new_samples = frame["new_samples"].astype(float)
+    cumulative = frame["cumulative_pseudo"].astype(float)
 
-    ax2 = ax1.twinx()
+    fig, (ax_counts, ax_quality) = plt.subplots(
+        2,
+        1,
+        figsize=(10.0, 6.2),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.6, 1.0]},
+    )
+
+    bars = ax_counts.bar(iterations, new_samples, color="#4c72b0", alpha=0.8, label="新增伪标签数")
+    ax_counts.plot(iterations, cumulative, color="#dd8452", marker="o", linewidth=1.6, label="累计伪标签数")
+    for rect in bars:
+        height = rect.get_height()
+        if height <= 0:
+            continue
+        ax_counts.text(
+            rect.get_x() + rect.get_width() / 2,
+            rect.get_height() + max(new_samples.max() * 0.02, 1.0),
+            f"{height:.0f}",
+            ha="center",
+            va="bottom",
+            fontsize="x-small",
+            color="#333333",
+        )
+    ax_counts.set_ylabel("伪标签数量")
+    ax_counts.set_xticks(iterations)
+    ax_counts.grid(True, linestyle="--", alpha=0.3)
+    ax_counts.legend(loc="upper left")
+
+    handles_quality: List[Any] = []
+    labels_quality: List[str] = []
     if "probability_mean" in frame.columns:
-        ax2.plot(
+        line_prob, = ax_quality.plot(
             iterations,
             frame["probability_mean"],
             color="#55a868",
@@ -158,8 +198,10 @@ def _plot_pseudo_history(history: Optional[List[Dict[str, float]]], path: Path) 
             linewidth=1.4,
             label="平均置信度",
         )
+        handles_quality.append(line_prob)
+        labels_quality.append(line_prob.get_label())
     if "consistency_mean" in frame.columns:
-        ax2.plot(
+        line_cons, = ax_quality.plot(
             iterations,
             frame["consistency_mean"],
             color="#c44e52",
@@ -167,12 +209,29 @@ def _plot_pseudo_history(history: Optional[List[Dict[str, float]]], path: Path) 
             linewidth=1.4,
             label="平均一致性",
         )
-    ax2.set_ylabel("概率/一致性")
-    if "threshold" in frame.columns:
-        ax2.axhline(frame["threshold"].iloc[0], color="#55a868", linestyle="--", linewidth=1.0, alpha=0.6, label="置信度阈值")
-    if "consistency_threshold" in frame.columns:
-        ax2.axhline(
-            frame["consistency_threshold"].iloc[0],
+        handles_quality.append(line_cons)
+        labels_quality.append(line_cons.get_label())
+
+    threshold = frame["threshold"].iloc[0] if "threshold" in frame.columns else None
+    consistency_threshold = (
+        frame["consistency_threshold"].iloc[0] if "consistency_threshold" in frame.columns else None
+    )
+    ax_quality.set_ylim(0.0, 1.05)
+    if threshold is not None and consistency_threshold is not None:
+        region_x = [iterations.min() - 0.5, iterations.max() + 0.5]
+        ax_quality.fill_between(
+            region_x,
+            consistency_threshold,
+            1.05,
+            color="#d9f0d3",
+            alpha=0.2,
+            label="通过阈值区域",
+        )
+    if threshold is not None:
+        ax_quality.axhline(threshold, color="#55a868", linestyle="--", linewidth=1.0, alpha=0.6, label="置信度阈值")
+    if consistency_threshold is not None:
+        ax_quality.axhline(
+            consistency_threshold,
             color="#c44e52",
             linestyle=":",
             linewidth=1.0,
@@ -180,12 +239,20 @@ def _plot_pseudo_history(history: Optional[List[Dict[str, float]]], path: Path) 
             label="一致性阈值",
         )
 
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    handles2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(handles1 + handles2, labels1 + labels2, loc="upper left")
+    ax_quality.set_ylabel("概率 / 一致性")
+    ax_quality.set_xlabel("迭代轮次")
+    ax_quality.set_xticks(iterations)
+    ax_quality.grid(True, linestyle="--", alpha=0.3)
+    handles2, labels2 = ax_quality.get_legend_handles_labels()
+    if handles_quality:
+        handles2 = handles_quality + handles2
+        labels2 = labels_quality + labels2
+    if handles2:
+        ax_quality.legend(handles2, labels2, loc="lower right")
 
-    fig.suptitle("伪标签迭代与多模态一致性")
-    fig.tight_layout()
+    total_selected = int(cumulative.iloc[-1]) if not cumulative.empty else 0
+    fig.suptitle(f"伪标签迭代与多模态一致性（累计 {total_selected} 条）")
+    fig.tight_layout(h_pad=0.6)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=300)
     plt.close(fig)
@@ -202,89 +269,121 @@ def _plot_time_frequency_distribution(result, path: Path) -> None:
 
     source = result.source_features
     target = result.target_features
-    diffs: List[Tuple[str, float]] = []
+    stats_records: List[Dict[str, float | str]] = []
+    ranking_records: List[Dict[str, float]] = []
     for feature in features:
-        source_mean = source[feature].dropna().astype(float)
-        target_mean = target[feature].dropna().astype(float)
-        if source_mean.empty and target_mean.empty:
-            continue
-        diff = abs(source_mean.mean() - target_mean.mean())
-        diffs.append((feature, diff))
-    if not diffs:
-        return
-
-    diffs.sort(key=lambda item: item[1], reverse=True)
-    top_features = [name for name, _ in diffs[: min(6, len(diffs))]]
-
-    records: List[Dict[str, float | str]] = []
-    for feature in top_features:
         src_values = source[feature].dropna().astype(float)
         tgt_values = target[feature].dropna().astype(float)
         if src_values.empty and tgt_values.empty:
             continue
-        records.append(
+        src_mean = float(src_values.mean()) if not src_values.empty else 0.0
+        tgt_mean = float(tgt_values.mean()) if not tgt_values.empty else 0.0
+        src_std = float(src_values.std(ddof=1)) if src_values.size > 1 else 0.0
+        tgt_std = float(tgt_values.std(ddof=1)) if tgt_values.size > 1 else 0.0
+        pooled_std = math.sqrt(max(src_std**2 + tgt_std**2, 0.0) / 2.0)
+        if not np.isfinite(pooled_std) or pooled_std < 1e-9:
+            pooled_std = 1.0
+        effect = (tgt_mean - src_mean) / pooled_std
+        if not np.isfinite(effect):
+            effect = 0.0
+        diff = tgt_mean - src_mean
+        if abs(src_mean) > 1e-9:
+            relative = diff / abs(src_mean)
+        else:
+            relative = 0.0
+        if not np.isfinite(relative):
+            relative = 0.0
+        stats_records.append(
             {
                 "feature": feature,
                 "domain": "源域",
-                "mean": float(src_values.mean()),
-                "std": float(src_values.std(ddof=1) if src_values.size > 1 else 0.0),
+                "mean": src_mean,
+                "std": src_std,
             }
         )
-        records.append(
+        stats_records.append(
             {
                 "feature": feature,
                 "domain": "目标域",
-                "mean": float(tgt_values.mean()),
-                "std": float(tgt_values.std(ddof=1) if tgt_values.size > 1 else 0.0),
+                "mean": tgt_mean,
+                "std": tgt_std,
             }
         )
-    if not records:
+        ranking_records.append(
+            {
+                "feature": feature,
+                "abs_diff": abs(diff),
+                "relative_diff": relative,
+                "effect": effect,
+            }
+        )
+
+    if not stats_records:
         return
 
-    frame = pd.DataFrame(records)
-    dictionary = build_feature_dictionary(top_features)
+    stats_df = pd.DataFrame(stats_records)
+    ranking_df = pd.DataFrame(ranking_records)
+    ranking_df["score"] = ranking_df["effect"].abs()
+    ranking_df = ranking_df.sort_values(["score", "abs_diff"], ascending=False)
+    top_features = ranking_df.head(min(8, len(ranking_df)))
+    if top_features.empty:
+        return
+    feature_order = top_features["feature"].tolist()
+
+    dictionary = build_feature_dictionary(feature_order)
     mapping = dictionary.set_index("feature")["chinese_name"].to_dict()
-    display_names = [mapping.get(feature, feature) for feature in top_features]
-    src = frame[frame["domain"] == "源域"].set_index("feature").reindex(top_features)
-    tgt = frame[frame["domain"] == "目标域"].set_index("feature").reindex(top_features)
+    display_names = [mapping.get(feature, feature) for feature in feature_order]
+
+    src = stats_df[stats_df["domain"] == "源域"].set_index("feature").reindex(feature_order)
+    tgt = stats_df[stats_df["domain"] == "目标域"].set_index("feature").reindex(feature_order)
+    effect_info = ranking_df.set_index("feature").loc[feature_order]
+
     mean_diff = tgt["mean"].fillna(0.0) - src["mean"].fillna(0.0)
-    relative_diff = np.divide(
-        mean_diff,
-        np.where(np.abs(src["mean"].fillna(0.0)) > 1e-9, np.abs(src["mean"].fillna(0.0)), 1.0),
-    )
+    relative_diff = effect_info["relative_diff"].fillna(0.0)
+    effect_values = effect_info["effect"].fillna(0.0)
 
     configure_chinese_font()
     import matplotlib.pyplot as plt
 
-    fig, (ax_bar, ax_line) = plt.subplots(
+    fig, (ax_bar, ax_ratio) = plt.subplots(
         2,
         1,
-        figsize=(10.5, 6.4),
+        figsize=(11.0, 6.6),
         sharex=True,
-        gridspec_kw={"height_ratios": [2.2, 1.2]},
+        gridspec_kw={"height_ratios": [2.3, 1.2]},
     )
-    x = np.arange(len(top_features))
-    width = 0.35
+    x = np.arange(len(feature_order))
+    width = 0.36
 
     ax_bar.bar(x - width / 2, src["mean"], width, yerr=src["std"], capsize=4, label="源域均值", color="#4c72b0")
     ax_bar.bar(x + width / 2, tgt["mean"], width, yerr=tgt["std"], capsize=4, label="目标域均值", color="#dd8452")
     ax_bar.set_ylabel("统计均值")
     ax_bar.set_title("时频特征源/目标域分布对比")
     ax_bar.grid(True, linestyle="--", alpha=0.3)
-    ax_bar.legend()
+    ax_bar.legend(loc="upper left")
 
-    ax_line.plot(x, mean_diff, color="#55a868", marker="o", linewidth=1.5, label="均值差值 (目标-源)")
-    ax_line.bar(x, relative_diff, color="#c44e52", alpha=0.4, label="相对差值")
-    ax_line.axhline(0.0, color="#444444", linewidth=0.8, linestyle="--")
-    ax_line.set_ylabel("差异")
-    ax_line.set_xlabel("特征")
-    ax_line.grid(True, linestyle="--", alpha=0.3)
-    ax_line.legend(loc="upper right")
+    ax_ratio.bar(x, relative_diff, color="#c44e52", alpha=0.45, label="相对差值 (目标/源-1)")
+    ax_ratio.axhline(0.0, color="#444444", linewidth=0.8, linestyle="--")
+    ax_ratio.set_ylabel("相对差值")
+    ax_ratio.grid(True, linestyle="--", alpha=0.3)
 
-    ax_line.set_xticks(x)
-    ax_line.set_xticklabels(display_names, rotation=25, ha="right")
+    ax_effect = ax_ratio.twinx()
+    ax_effect.plot(x, effect_values, color="#8172b3", marker="s", linewidth=1.6, label="效应量 (Cohen's d)")
+    ax_effect.axhline(0.0, color="#8172b3", linestyle=":", linewidth=0.8, alpha=0.6)
+    ax_effect.set_ylabel("效应量 (Cohen's d)")
 
-    fig.tight_layout(h_pad=0.6)
+    ax_ratio.set_xlabel("特征")
+    ax_ratio.set_xticks(x)
+    ax_ratio.set_xticklabels(display_names, rotation=25, ha="right")
+
+    handles_ratio, labels_ratio = ax_ratio.get_legend_handles_labels()
+    handles_effect, labels_effect = ax_effect.get_legend_handles_labels()
+    combined_handles = handles_ratio + handles_effect
+    combined_labels = labels_ratio + labels_effect
+    if combined_handles:
+        ax_effect.legend(combined_handles, combined_labels, loc="upper right")
+
+    fig.tight_layout(h_pad=0.7)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=300)
     plt.close(fig)
@@ -554,38 +653,75 @@ def _plot_consistency_scatter(pseudo_quality: pd.DataFrame, path: Path) -> None:
         iterations = pd.Series([1] * len(frame))
     iteration_values = iterations.astype(float)
 
-    fig, ax = plt.subplots(figsize=(7.8, 5.6))
+    fig, ax = plt.subplots(figsize=(8.0, 5.8))
     scatter = ax.scatter(
         probabilities,
         consistencies,
         c=iteration_values,
         cmap="viridis",
-        alpha=0.75,
-        edgecolors="k",
-        linewidths=0.3,
+        alpha=0.78,
+        edgecolors="none",
+        s=46,
     )
     ax.set_xlabel("最大置信度")
     ax.set_ylabel("一致性得分")
-    if "threshold" in frame.columns:
+    threshold = float(frame["threshold"].iloc[0]) if "threshold" in frame.columns else None
+    consistency_threshold = (
+        float(frame["consistency_threshold"].iloc[0]) if "consistency_threshold" in frame.columns else None
+    )
+    if threshold is not None and consistency_threshold is not None:
+        ax.fill_betweenx(
+            [consistency_threshold, 1.0],
+            threshold,
+            1.0,
+            color="#d9f0d3",
+            alpha=0.25,
+            label="满足双阈值区域",
+        )
+    if threshold is not None:
         ax.axvline(
-            float(frame["threshold"].iloc[0]),
+            threshold,
             color="#55a868",
             linestyle="--",
             linewidth=1.0,
             alpha=0.7,
             label="置信度阈值",
         )
-    if "consistency_threshold" in frame.columns:
+    if consistency_threshold is not None:
         ax.axhline(
-            float(frame["consistency_threshold"].iloc[0]),
+            consistency_threshold,
             color="#c44e52",
-            linestyle="--",
+            linestyle=":",
             linewidth=1.0,
             alpha=0.7,
             label="一致性阈值",
         )
+
+    if probabilities.size >= 2 and consistencies.size >= 2:
+        try:
+            slope, intercept = np.polyfit(probabilities, consistencies, 1)
+            x_line = np.linspace(probabilities.min(), probabilities.max(), 200)
+            y_line = slope * x_line + intercept
+            ax.plot(x_line, y_line, color="#4c72b0", linestyle="--", linewidth=1.0, label="线性趋势")
+            corr = np.corrcoef(probabilities, consistencies)[0, 1]
+            if np.isfinite(corr):
+                ax.text(
+                    0.02,
+                    0.95,
+                    f"相关系数：{corr:.2f}",
+                    transform=ax.transAxes,
+                    fontsize="small",
+                    color="#333333",
+                )
+        except Exception:
+            pass
+
+    ax.set_xlim(0.0, 1.02)
+    ax.set_ylim(0.0, 1.02)
     ax.grid(True, linestyle="--", alpha=0.3)
-    ax.legend(loc="lower right")
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, loc="lower right")
     colorbar = fig.colorbar(scatter, ax=ax)
     colorbar.set_label("伪标签迭代轮次")
     fig.suptitle("伪标签置信度与多模态一致性分布")

@@ -54,8 +54,8 @@ CORAL 特征对齐（CoralAligner）
 
 * **Train/Test Accuracy**：训练集与测试集准确率，评估拟合程度与泛化性能；
 * **Macro F1**：各类别 F1 值的算术平均，衡量类别不平衡情形下的整体表现；
-* **Classification Report**：细化至每个类别的 Precision、Recall、F1 与 Support；
-* **Confusion Matrix**：以 CSV 形式保存，便于直观观察误判模式；
+* **Classification Report**：细化至每个类别的 Precision、Recall、F1 与 Support，即便某类样本在测试集中缺失也会保留“正常 + 三类故障”的完整指标列；
+* **Confusion Matrix**：以 CSV 形式保存并附带中文类别名，便于直观观察误判模式；
 * **Cross-Validation Scores**：若启用交叉验证，输出折均值及标准差，用于衡量模型稳定性。
 
 ## 5. 使用指南
@@ -83,6 +83,7 @@ CORAL 特征对齐（CoralAligner）
 - **可视化输出**：脚本自动生成 `confusion_matrix_heatmap.png` 与 `roc_curves.png`。前者可直接用于 PPT/报告，后者可帮助评估阈值策略、挑选工作点。
 - **模型持久化**：`source_domain_model.joblib` 内嵌完整 Pipeline（缺失值填补、CORAL、标准化、分类器）。验证模型时可执行 `joblib.load` 并调用 `predict`、`predict_proba`，确认推理阶段与训练一致。
 - **基线对比**：若配置了 `benchmarks`，会生成 `model_comparison.csv`。建议重点关注与主模型差距较大的模型，思考是否需要组合或引入更强的非线性模型。
+- **预测结果**：`predictions.csv` 中既保留标签编码，也新增中文标签列与各类别概率（列名同样翻译为中文），便于进行误判排查与可视化。
 
 ## 7. 结果解读建议
 

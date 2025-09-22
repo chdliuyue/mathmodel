@@ -14,7 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from ...analysis.feature_analysis import configure_chinese_font
-from ...analysis.feature_dictionary import build_feature_dictionary
+from ...analysis.feature_dictionary import build_feature_dictionary, build_label_name_map
 from ..task3.transfer import TransferResult
 
 LOGGER = logging.getLogger(__name__)
@@ -26,6 +26,13 @@ class GlobalInterpretabilityResult:
 
     per_feature: pd.DataFrame
     per_category: pd.DataFrame
+
+
+def _build_label_mapping(labels: Sequence[str]) -> Dict[str, str]:
+    if not labels:
+        return {}
+    mapping = build_label_name_map(labels)
+    return {str(key): value for key, value in mapping.items()}
 
 
 def _extract_classifier(pipeline: Pipeline):
@@ -120,6 +127,8 @@ def compute_global_feature_effects(
     classifier = _extract_classifier(result.final_pipeline)
     feature_columns = result.feature_columns
     dictionary = _build_feature_metadata(feature_columns)
+    raw_classes = list(getattr(classifier, "classes_", []))
+    label_map = _build_label_mapping(raw_classes)
 
     has_coef = hasattr(classifier, "coef_")
     chosen = method.lower()
@@ -134,13 +143,16 @@ def compute_global_feature_effects(
     if chosen == "linear":
         if not has_coef:
             raise ValueError("模型未提供线性系数，无法使用线性解释。")
-        classes = getattr(classifier, "classes_", [])
+        classes = raw_classes
         for class_index, class_name in enumerate(classes):
+            class_code = str(class_name)
+            display_label = label_map.get(class_code, class_code)
             coefficients = classifier.coef_[class_index]
             for feature_name, coefficient in zip(feature_columns, coefficients):
                 records.append(
                     {
-                        "类别": str(class_name),
+                        "类别编码": class_code,
+                        "类别": display_label,
                         "特征编码": feature_name,
                         "影响值": float(coefficient),
                         "重要性": float(abs(coefficient)),
@@ -151,7 +163,8 @@ def compute_global_feature_effects(
                 intercept = float(classifier.intercept_[class_index])
                 records.append(
                     {
-                        "类别": str(class_name),
+                        "类别编码": class_code,
+                        "类别": display_label,
                         "特征编码": "__intercept__",
                         "影响值": intercept,
                         "重要性": abs(intercept),
@@ -165,12 +178,16 @@ def compute_global_feature_effects(
             background_size=shap_background,
             nsamples=shap_nsamples,
         )
+        shap_label_map = _build_label_mapping(class_labels)
         for class_index, class_name in enumerate(class_labels):
+            class_code = str(class_name)
+            display_label = shap_label_map.get(class_code, label_map.get(class_code, class_code))
             if mean_contribution.size:
                 for feature_index, feature_name in enumerate(feature_columns):
                     records.append(
                         {
-                            "类别": str(class_name),
+                            "类别编码": class_code,
+                            "类别": display_label,
                             "特征编码": feature_name,
                             "影响值": float(mean_contribution[class_index, feature_index]),
                             "重要性": float(mean_absolute[class_index, feature_index]),
@@ -181,7 +198,8 @@ def compute_global_feature_effects(
                 baseline_value = float(baseline[class_index, 0])
                 records.append(
                     {
-                        "类别": str(class_name),
+                        "类别编码": class_code,
+                        "类别": display_label,
                         "特征编码": "__intercept__",
                         "影响值": baseline_value,
                         "重要性": abs(baseline_value),
@@ -192,7 +210,17 @@ def compute_global_feature_effects(
     per_feature = pd.DataFrame(records)
     if per_feature.empty:
         per_feature = pd.DataFrame(
-            columns=["类别", "特征编码", "影响值", "重要性", "优势比", "特征中文名", "特征类别", "特征显示名"]
+            columns=[
+                "类别编码",
+                "类别",
+                "特征编码",
+                "影响值",
+                "重要性",
+                "优势比",
+                "特征中文名",
+                "特征类别",
+                "特征显示名",
+            ]
         )
     else:
         per_feature = per_feature.merge(dictionary, on="特征编码", how="left")
@@ -204,10 +232,10 @@ def compute_global_feature_effects(
 
     non_intercept = per_feature[per_feature["特征编码"] != "__intercept__"]
     if non_intercept.empty:
-        per_category = pd.DataFrame(columns=["类别", "特征类别", "重要性"])
+        per_category = pd.DataFrame(columns=["类别编码", "类别", "特征类别", "重要性"])
     else:
         per_category = (
-            non_intercept.groupby(["类别", "特征类别"], as_index=False)["重要性"].sum()
+            non_intercept.groupby(["类别编码", "类别", "特征类别"], as_index=False)["重要性"].sum()
         )
 
     return GlobalInterpretabilityResult(per_feature=per_feature, per_category=per_category)
@@ -241,13 +269,17 @@ def compute_domain_shift_contributions(result: TransferResult) -> pd.DataFrame:
 
     records: List[Dict[str, float]] = []
     classes = getattr(classifier, "classes_", [])
+    label_map = _build_label_mapping(classes)
     for class_index, class_name in enumerate(classes):
+        class_code = str(class_name)
+        display_label = label_map.get(class_code, class_code)
         coefficients = classifier.coef_[class_index]
         contributions = coefficients * delta.values
         for feature, coeff, contrib in zip(feature_columns, coefficients, contributions):
             records.append(
                 {
-                    "类别": str(class_name),
+                    "类别编码": class_code,
+                    "类别": display_label,
                     "特征编码": feature,
                     "系数": float(coeff),
                     "均值差异": float(delta[feature]),
@@ -356,6 +388,7 @@ def explain_instance(
     numeric_sample = sample_frame.astype(float)
 
     classes = list(getattr(classifier, "classes_", []))
+    label_map = _build_label_mapping(classes)
     chosen_method = method.lower()
     if chosen_method == "auto":
         chosen_method = "linear" if hasattr(classifier, "coef_") else "shap"
@@ -417,7 +450,8 @@ def explain_instance(
     else:
         raise ValueError(f"不支持的解释方法: {method}")
 
-    target_label = str(classes[target_index]) if classes else str(target_index)
+    target_code = str(classes[target_index]) if classes else str(target_index)
+    target_label = label_map.get(target_code, target_code)
 
     records: List[Dict[str, float]] = []
     for idx, feature_name in enumerate(feature_columns):
@@ -428,6 +462,7 @@ def explain_instance(
                 "原始取值": float(original_value),
                 "模型输入值": float(transformed[0, idx]),
                 "贡献值": float(contributions[idx]),
+                "目标类别编码": target_code,
                 "目标类别": target_label,
                 "目标类别概率": target_probability,
                 "解释方法": chosen_method,
@@ -440,6 +475,7 @@ def explain_instance(
                 "原始取值": 1.0,
                 "模型输入值": 1.0,
                 "贡献值": float(intercept_value),
+                "目标类别编码": target_code,
                 "目标类别": target_label,
                 "目标类别概率": target_probability,
                 "解释方法": chosen_method,
@@ -624,40 +660,75 @@ def plot_domain_shift(contributions: pd.DataFrame, output_path: Path, top_n: int
         LOGGER.warning("域偏移贡献为空，跳过绘图。")
         return
 
-    summary = contributions.sort_values("绝对贡献", ascending=False).head(top_n)
-    if summary.empty:
+    working = contributions.copy()
+    working["特征显示名"] = working["特征显示名"].fillna(working["特征编码"])
+    aggregated = (
+        working.groupby(["特征显示名", "类别"], as_index=False)["Logit贡献"].sum()
+    )
+    aggregated["绝对贡献"] = aggregated["Logit贡献"].abs()
+    ranking = aggregated.groupby("特征显示名")["绝对贡献"].sum().sort_values(ascending=False)
+    selected = ranking.head(top_n).index.tolist()
+    if not selected:
         LOGGER.warning("域偏移贡献为空，跳过绘图。")
+        return
+
+    filtered = aggregated[aggregated["特征显示名"].isin(selected)]
+    if filtered.empty:
+        LOGGER.warning("筛选后的域偏移贡献为空，跳过绘图。")
         return
 
     configure_chinese_font()
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
 
-    classes = summary["类别"].astype(str)
-    unique_classes = list(dict.fromkeys(classes))
-    palette = plt.cm.get_cmap("Set2", max(len(unique_classes), 1))
-    colour_map = {cls: palette(index) for index, cls in enumerate(unique_classes)}
-    bar_colours = [colour_map[cls] for cls in classes]
+    class_order = list(dict.fromkeys(filtered["类别"].astype(str)))
+    pivot = filtered.pivot(index="特征显示名", columns="类别", values="Logit贡献").fillna(0.0)
+    pivot = pivot.reindex(selected)
 
-    values = summary["Logit贡献"].to_numpy()
-    max_abs = float(np.max(np.abs(values))) if values.size else 1.0
+    indices = np.arange(len(pivot.index))
+    n_classes = max(len(class_order), 1)
+    bar_height = 0.8 / n_classes
+    palette = plt.cm.get_cmap("Set2", n_classes)
+
+    fig, ax = plt.subplots(figsize=(11.0, max(4.0, len(pivot.index) * 0.55)))
+    max_abs = float(np.max(np.abs(pivot.to_numpy()))) if pivot.values.size else 1.0
     limit = max(max_abs * 1.2, 1.0)
 
-    plt.figure(figsize=(10.5, max(4, top_n * 0.35)))
-    plt.barh(summary["特征显示名"], values, color=bar_colours)
-    plt.xlabel("Logit 变化量")
-    plt.ylabel("特征")
-    plt.title("域偏移对不同类别决策的贡献")
-    plt.axvline(0.0, color="#444444", linewidth=0.8, linestyle="--")
-    plt.xlim(-limit, limit)
-    plt.gca().invert_yaxis()
-    legend_handles = [Patch(facecolor=colour_map[cls], edgecolor="none", label=cls) for cls in unique_classes]
+    legend_handles: List[Patch] = []
+    for idx, cls in enumerate(class_order):
+        offset = (idx - (n_classes - 1) / 2) * bar_height * 1.2
+        values = pivot[cls].to_numpy() if cls in pivot.columns else np.zeros(len(pivot))
+        bars = ax.barh(indices + offset, values, height=bar_height, color=palette(idx), alpha=0.85, label=cls)
+        legend_handles.append(Patch(facecolor=palette(idx), edgecolor="none", label=cls))
+        for rect in bars:
+            width = rect.get_width()
+            if abs(width) < limit * 0.02:
+                continue
+            text_x = rect.get_x() + width + (0.015 if width >= 0 else -0.015) * limit
+            ax.text(
+                text_x,
+                rect.get_y() + rect.get_height() / 2,
+                f"{width:.3f}",
+                va="center",
+                ha="left" if width >= 0 else "right",
+                fontsize="x-small",
+                color="#333333",
+            )
+
+    ax.axvline(0.0, color="#444444", linewidth=0.8, linestyle="--")
+    ax.set_xlim(-limit, limit)
+    ax.set_yticks(indices)
+    ax.set_yticklabels(pivot.index)
+    ax.set_xlabel("Logit 变化量")
+    ax.set_ylabel("特征")
+    ax.set_title("域偏移对不同类别决策的贡献")
+    ax.grid(True, linestyle="--", alpha=0.3, axis="x")
     if legend_handles:
-        plt.legend(handles=legend_handles, title="类别", fontsize="small", loc="lower right")
-    plt.tight_layout()
+        ax.legend(handles=legend_handles, title="类别", fontsize="small", loc="lower right")
+    fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_path, dpi=300)
-    plt.close()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
 
 
 def plot_local_explanation(explanation: pd.DataFrame, output_path: Path, top_n: int = 10) -> None:
@@ -665,26 +736,47 @@ def plot_local_explanation(explanation: pd.DataFrame, output_path: Path, top_n: 
         LOGGER.warning("局部解释结果为空，跳过绘图。")
         return
 
-    summary = explanation.head(top_n)
+    summary = explanation.sort_values("贡献绝对值", ascending=False).head(top_n)
     configure_chinese_font()
     import matplotlib.pyplot as plt
 
-    plt.figure(figsize=(10, max(4, top_n * 0.45)))
+    fig, ax = plt.subplots(figsize=(10.2, max(4, top_n * 0.48)))
     contributions = summary["贡献值"].to_numpy()
     max_abs = float(np.max(np.abs(contributions))) if contributions.size else 1.0
-    limit = max(max_abs * 1.2, 1.0)
+    limit = max(max_abs * 1.25, 1.0)
     colours = ["#d62728" if value >= 0 else "#1f77b4" for value in contributions]
-    plt.barh(summary["特征显示名"], contributions, color=colours)
-    plt.xlabel("对 Logit 的贡献")
-    plt.ylabel("特征")
-    plt.title("单样本特征贡献排序")
-    plt.axvline(0.0, color="#444444", linewidth=0.8, linestyle="--")
-    plt.xlim(-limit, limit)
-    plt.gca().invert_yaxis()
-    plt.tight_layout()
+    bars = ax.barh(summary["特征显示名"], contributions, color=colours)
+    for rect in bars:
+        width = rect.get_width()
+        if abs(width) < limit * 0.02:
+            continue
+        text_x = rect.get_x() + width + (0.015 if width >= 0 else -0.015) * limit
+        ax.text(
+            text_x,
+            rect.get_y() + rect.get_height() / 2,
+            f"{width:.3f}",
+            va="center",
+            ha="left" if width >= 0 else "right",
+            fontsize="x-small",
+            color="#333333",
+        )
+
+    ax.set_xlabel("对 Logit 的贡献")
+    ax.set_ylabel("特征")
+    target_label = summary.get("目标类别")
+    label_text = str(target_label.iloc[0]) if target_label is not None and not target_label.empty else ""
+    title = "单样本特征贡献排序"
+    if label_text:
+        title = f"{title} – 目标类别：{label_text}"
+    ax.set_title(title)
+    ax.axvline(0.0, color="#444444", linewidth=0.8, linestyle="--")
+    ax.set_xlim(-limit, limit)
+    ax.invert_yaxis()
+    ax.grid(True, linestyle="--", alpha=0.3, axis="x")
+    fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_path, dpi=300)
-    plt.close()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
 
 
 def plot_local_cluster_heatmap(cluster_profile: pd.DataFrame, output_path: Path, top_n: int = 12) -> None:
