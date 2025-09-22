@@ -78,10 +78,10 @@ python scripts/extract_features.py --config config/dataset_config.yaml
 为了快速评估源/目标域特征的类别可分性并直观理解原始时序信号，新增了分析脚本：
 
 ```bash
-python scripts/analyze_features.py --config config/dataset_config.yaml --max-records 6 --preview-seconds 3
+python scripts/analyze_features.py --config config/dataset_config.yaml --preview-seconds 3
 ```
 
-上述示例命令中，`--max-records 6` 表示在源域/目标域的时序网格图中最多展示 6 条信号；`--preview-seconds 3` 则指定每条信号在时域预览图中截取 3 秒的数据窗口，便于放大关键细节。
+默认情况下脚本会一次性展示 **16 条目标域信号** 以及 **19 个源域代表样本**（`48kHz_Normal_data` 全部 4 条 + `12kHz_DE_data`/`12kHz_FE_data`/`48kHz_DE_data` 各自挑选 B、IR 及 OR-`Centered`/`Opposite`/`Orthogonal` 五个代表），对应“4 + 5×3”的目录覆盖策略，确保每个文件夹都能在时序网格图中出现。`--preview-seconds 3` 用于控制时域预览的秒数，仍可按需调节。若需额外限制数量，可使用 `--target-max-records` / `--source-max-records`（或 `--max-records`）覆写默认行为；如需恢复完整样本遍历，可将 `--source-preview-mode` 设为 `diverse`。
 
 脚本会在 `artifacts/analysis/`（或通过 `--analysis-dir` 指定的目录）下生成内容全面的中文可视化/报表：
 
