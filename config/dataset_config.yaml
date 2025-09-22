@@ -10,7 +10,7 @@ source:
   selection:
     rpm_target: 600
     sampling_rate_target: 32000
-    top_k_per_label: 15
+    top_k_per_label: null
     rpm_weight: 0.6
     sampling_rate_weight: 0.3
     load_weight: 0.05

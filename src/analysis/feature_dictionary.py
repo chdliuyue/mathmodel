@@ -79,11 +79,21 @@ _FREQUENCY_TRANSLATIONS: Mapping[str, FeatureDescription] = {
 }
 
 _FAULT_TRANSLATIONS: Mapping[str, FeatureDescription] = {
-    "ftf_band_energy": FeatureDescription("FTF band energy", "保持架故障带能量", "fault", "保持架故障特征频带能量"),
+    "ftf_band_energy": FeatureDescription(
+        "FTF band energy",
+        "保持架特征频带能量",
+        "fault",
+        "保持架（保持架公转）特征频率附近的能量聚集情况",
+    ),
     "bpfo_band_energy": FeatureDescription("BPFO band energy", "外圈故障带能量", "fault", "外圈故障特征频带能量"),
     "bpfi_band_energy": FeatureDescription("BPFI band energy", "内圈故障带能量", "fault", "内圈故障特征频带能量"),
     "bsf_band_energy": FeatureDescription("BSF band energy", "滚动体故障带能量", "fault", "滚动体故障特征频带能量"),
-    "ftf_band_ratio": FeatureDescription("FTF energy ratio", "保持架能量占比", "fault", "保持架特征频带能量占总能量比例"),
+    "ftf_band_ratio": FeatureDescription(
+        "FTF energy ratio",
+        "保持架频带能量占比",
+        "fault",
+        "保持架特征频带能量占总能量的比例",
+    ),
     "bpfo_band_ratio": FeatureDescription("BPFO energy ratio", "外圈能量占比", "fault", "外圈特征频带能量占比"),
     "bpfi_band_ratio": FeatureDescription("BPFI energy ratio", "内圈能量占比", "fault", "内圈特征频带能量占比"),
     "bsf_band_ratio": FeatureDescription("BSF energy ratio", "滚动体能量占比", "fault", "滚动体特征频带能量占比"),
@@ -403,4 +413,58 @@ def build_feature_dictionary(columns: Iterable[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-__all__ = ["FeatureDescription", "build_feature_dictionary", "TIME_FREQUENCY_TRANSLATIONS"]
+LABEL_DISPLAY_MAP: Mapping[str, str] = {
+    "normal": "正常工况",
+    "ball_fault": "滚动体故障",
+    "inner_race_fault": "内圈故障",
+    "outer_race_fault": "外圈故障",
+    "ftf": "保持架特征频率",
+    "bpfo": "外圈故障",
+    "bpfi": "内圈故障",
+    "bsf": "滚动体故障",
+    "unlabelled": "未标注",
+    "unknown": "未知类别",
+}
+
+LABEL_DISPLAY_ORDER: Sequence[str] = (
+    "normal",
+    "ball_fault",
+    "inner_race_fault",
+    "outer_race_fault",
+)
+
+
+def build_feature_name_map(columns: Iterable[str]) -> Dict[str, str]:
+    """返回特征编码到中文名称的映射。"""
+
+    dictionary = build_feature_dictionary(columns)
+    return dict(zip(dictionary["feature"], dictionary["chinese_name"]))
+
+
+def build_label_name_map(labels: Iterable[str]) -> Dict[str, str]:
+    """将标签值转换为中文显示名称。"""
+
+    mapping: Dict[str, str] = {}
+    for label in labels:
+        key = str(label)
+        mapping[key] = LABEL_DISPLAY_MAP.get(key, key)
+    return mapping
+
+
+def translate_labels(labels: Iterable[str]) -> List[str]:
+    """批量翻译标签列表。"""
+
+    name_map = build_label_name_map(labels)
+    return [name_map[str(label)] for label in labels]
+
+
+__all__ = [
+    "FeatureDescription",
+    "build_feature_dictionary",
+    "build_feature_name_map",
+    "build_label_name_map",
+    "translate_labels",
+    "TIME_FREQUENCY_TRANSLATIONS",
+    "LABEL_DISPLAY_MAP",
+    "LABEL_DISPLAY_ORDER",
+]

@@ -17,6 +17,7 @@ from sklearn.preprocessing import StandardScaler
 
 from src.feature_engineering.segmentation import segment_signal
 from src.feature_engineering.bearing import BearingSpec
+from src.analysis.feature_dictionary import build_feature_name_map, build_label_name_map
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,10 +37,16 @@ CHINESE_FONT_CANDIDATES: Sequence[str] = (
 )
 
 FAULT_LABEL_MAP = {
-    "FTF": "FTF 保持架",
+    "FTF": "FTF 保持架频率",
     "BPFO": "BPFO 外圈",
     "BPFI": "BPFI 内圈",
     "BSF": "BSF 滚动体",
+}
+
+DATASET_DISPLAY_MAP = {
+    "source": "源域",
+    "target": "目标域",
+    "unknown": "未知域",
 }
 
 
@@ -271,13 +278,21 @@ def plot_embedding(result: EmbeddingResult, output_path: Path, title: Optional[s
         ["数据域", "标签"],
     ):
         unique_values = colour_key.unique()
+        if legend_title == "数据域":
+            translation_map = {
+                str(value): DATASET_DISPLAY_MAP.get(str(value), str(value)) for value in unique_values
+            }
+        else:
+            translation_map = build_label_name_map(unique_values)
+
         for value in unique_values:
             mask = colour_key == value
             subset = data.loc[mask]
+            display_label = translation_map.get(str(value), str(value))
             ax.scatter(
                 subset["emb_x"],
                 subset["emb_y"],
-                label=str(value),
+                label=display_label,
                 alpha=0.7,
                 edgecolor="none",
             )
@@ -690,6 +705,11 @@ def plot_envelope_spectrum(
     )
 
     summary_df = pd.DataFrame()
+    label_positions: List[float] = []
+    amplitude_span = float(np.max(log_spectrum) - np.min(log_spectrum)) if log_spectrum.size else 1.0
+    vertical_spacing = max(amplitude_span * 0.08, 0.2)
+    freq_span = float(freqs.max() - freqs.min()) if freqs.size else 1.0
+    horizontal_offset = max(freq_span * 0.02, 5.0)
     if bearing is not None and rpm is not None:
         summary_df = summarise_fault_frequency_response(freqs, spectrum, bearing, float(rpm), tolerance=tolerance)
         for _, row in summary_df.iterrows():
@@ -705,25 +725,35 @@ def plot_envelope_spectrum(
             if peak_frequency is not None and peak_amplitude is not None and np.isfinite(peak_amplitude):
                 peak_log = float(np.log10(max(peak_amplitude, LOG_EPS)))
                 ax.scatter([peak_frequency], [peak_log], color="#ff7f0e", s=24, zorder=5)
-                ax.text(
-                    float(freq_value),
-                    peak_log,
-                    label,
-                    rotation=90,
-                    verticalalignment="bottom",
-                    horizontalalignment="right",
-                    fontsize="small",
-                )
+                base_x = float(peak_frequency)
+                base_y = peak_log
             else:
-                ax.text(
-                    float(freq_value),
-                    float(log_spectrum.max()),
-                    label,
-                    rotation=90,
-                    verticalalignment="bottom",
-                    horizontalalignment="right",
-                    fontsize="small",
-                )
+                base_x = float(freq_value)
+                base_y = float(np.max(log_spectrum)) if log_spectrum.size else 0.0
+
+            label_y = base_y
+            while any(abs(label_y - prev) < vertical_spacing for prev in label_positions):
+                label_y += vertical_spacing
+            label_positions.append(label_y)
+
+            offset = horizontal_offset
+            text_x = float(freq_value) + offset
+            horizontal_alignment = "left"
+            if text_x > float(freqs.max()):
+                text_x = float(freq_value) - offset
+                horizontal_alignment = "right"
+
+            ax.annotate(
+                label,
+                xy=(base_x, base_y),
+                xycoords="data",
+                xytext=(text_x, label_y),
+                textcoords="data",
+                arrowprops={"arrowstyle": "->", "color": "#1f77b4", "lw": 0.8, "alpha": 0.7},
+                horizontalalignment=horizontal_alignment,
+                verticalalignment="bottom",
+                fontsize="small",
+            )
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -886,8 +916,12 @@ def compute_feature_importance(
     top_indices = np.argsort(importances)[::-1][:top_n]
     top_features = [feature_cols[i] for i in top_indices]
     top_values = importances[top_indices]
+    name_map = build_feature_name_map(top_features)
+    chinese_names = [name_map.get(feature, feature) for feature in top_features]
 
-    importance_df = pd.DataFrame({"特征": top_features, "重要度": top_values})
+    importance_df = pd.DataFrame(
+        {"特征编码": top_features, "特征名称": chinese_names, "重要度": top_values}
+    )
 
     configure_chinese_font()
     import matplotlib.pyplot as plt
@@ -896,7 +930,7 @@ def compute_feature_importance(
     fig, ax = plt.subplots(figsize=(10, height))
     ax.barh(range(len(top_features)), top_values[::-1], color="#17becf")
     ax.set_yticks(range(len(top_features)))
-    ax.set_yticklabels(top_features[::-1])
+    ax.set_yticklabels(chinese_names[::-1])
     ax.invert_yaxis()
     ax.set_xlabel("重要度")
     ax.set_title("特征重要度（随机森林）")

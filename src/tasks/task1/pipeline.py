@@ -51,10 +51,25 @@ def _parse_feature_config(config: Optional[Mapping[str, Any]]) -> FeatureExtract
 
 
 def _parse_selection_config(config: Mapping[str, Any]) -> SelectionConfig:
+    raw_top_k = config.get("top_k_per_label", 10)
+    top_k: Optional[int]
+    if raw_top_k is None:
+        top_k = None
+    else:
+        if isinstance(raw_top_k, str) and raw_top_k.strip().lower() in {"all", "full", "any"}:
+            top_k = None
+        else:
+            try:
+                parsed = int(raw_top_k)
+            except (TypeError, ValueError):
+                LOGGER.warning("top_k_per_label=%s 无法解析，默认保留全部样本", raw_top_k)
+                top_k = None
+            else:
+                top_k = parsed if parsed > 0 else None
     return SelectionConfig(
         rpm_target=float(config.get("rpm_target", 600.0)),
         sampling_rate_target=float(config.get("sampling_rate_target", 32000.0)),
-        top_k_per_label=int(config.get("top_k_per_label", 10)),
+        top_k_per_label=top_k,
         rpm_weight=float(config.get("rpm_weight", 0.6)),
         sampling_rate_weight=float(config.get("sampling_rate_weight", 0.3)),
         load_weight=float(config.get("load_weight", 0.05)),
