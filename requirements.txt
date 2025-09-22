@@ -6,3 +6,5 @@ pyyaml
 matplotlib
 umap-learn
 joblib
+shap
+lime

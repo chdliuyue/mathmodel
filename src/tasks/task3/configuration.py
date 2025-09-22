@@ -12,6 +12,7 @@ from .transfer import PseudoLabelConfig, TransferConfig
 def parse_time_frequency(config: Dict[str, Any]) -> TimeFrequencyConfig:
     stft_cfg = config.get("stft", {})
     cwt_cfg = config.get("cwt", {})
+    mel_cfg = config.get("mel", {})
     return TimeFrequencyConfig(
         stft_nperseg=int(stft_cfg.get("nperseg", 512)),
         stft_noverlap=int(stft_cfg.get("noverlap", 256)),
@@ -21,6 +22,12 @@ def parse_time_frequency(config: Dict[str, Any]) -> TimeFrequencyConfig:
         cwt_min_scale=float(cwt_cfg.get("min_scale", 1.0)),
         cwt_max_scale=float(cwt_cfg.get("max_scale", 128.0)),
         cwt_num_scales=int(cwt_cfg.get("num_scales", 64)),
+        mel_num_mels=int(mel_cfg.get("num_mels", 48)),
+        mel_fmin=float(mel_cfg.get("fmin", 20.0)),
+        mel_fmax=float(mel_cfg.get("fmax", 20000.0)),
+        mel_power=float(mel_cfg.get("power", 2.0)),
+        mel_log_amplitude=bool(mel_cfg.get("log_amplitude", True)),
+        consistency_bins=int(config.get("consistency_bins", 48)),
     )
 
 
@@ -30,6 +37,7 @@ def parse_pseudo_label(config: Dict[str, Any]) -> PseudoLabelConfig:
         confidence_threshold=float(config.get("confidence_threshold", 0.95)),
         max_iterations=int(config.get("max_iterations", 2)),
         max_ratio=float(config.get("max_ratio", 0.4)),
+        consistency_threshold=float(config.get("consistency_threshold", 0.6)),
     )
 
 

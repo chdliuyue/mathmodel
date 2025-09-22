@@ -49,18 +49,49 @@ time_frequency:
     min_scale: 1.0
     max_scale: 128.0
     num_scales: 64
+  mel:
+    num_mels: 64
+    fmin: 20.0
+    fmax: 20000.0
+    power: 2.0
+    log_amplitude: true
+  consistency_bins: 64
 
 pseudo_label:
   enabled: true
   confidence_threshold: 0.95
   max_iterations: 2
   max_ratio: 0.5
+  consistency_threshold: 0.6
+
+global_importance:
+  method: auto
+  shap_background: 200
+  shap_nsamples: 200
+  top_n: 20
+
+domain_shift:
+  top_n: 20
 
 local_explanation:
   dataset: target
+  indices:
+    - 0
   index: 0
   class: null
+  method: auto
   top_n: 10
+  shap:
+    background: 200
+    nsamples: 200
+  lime:
+    num_samples: 5000
+    random_state: 42
+  cluster:
+    enabled: true
+    n_clusters: 3
+    random_state: 42
+    top_n: 12
 
 outputs:
   directory: artifacts/task4
@@ -71,4 +102,7 @@ outputs:
   global_plot: global_importance.png
   domain_shift_plot: domain_shift.png
   local_plot: local_explanation.png
+  local_cluster_assignments: local_cluster_assignments.csv
+  local_cluster_profiles: local_cluster_profiles.csv
+  local_cluster_plot: local_cluster_heatmap.png
   metrics: interpretability_summary.json
