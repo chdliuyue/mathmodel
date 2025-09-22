@@ -93,12 +93,13 @@ python scripts/analyze_features.py --config config/dataset_config.yaml --preview
 - `故障特征频率验证.csv`：列出理论频率、包络谱峰值与误差，辅助校验轴承参数设置是否匹配；
 - `tsne_embedding.png` / `umap_embedding.png`：源域与目标域特征的低维嵌入图（中文标题与刻度）；
 - `target_time_series_overview.png` 与 `target_*`/`source_*` 诊断图：新版时序网格对齐示例图、时频谱图、窗序折线、包络谱、时频显著性热图等多视角信号分析图。
+- `*_包络谱.png`：三维包络谱（沿虚拟深度复制包络能量，自动标注理论故障频率，便于旋转观察细节）。
 
 关于任务1数据字典、字段解释及处理流程的完整说明，详见 [`TASK1_REPORT.md`](TASK1_REPORT.md)。
 
 ## 任务2：源域故障诊断建模
 
-在完成特征构建后，可直接调用 `scripts/train_task2_model.py` 训练源域诊断模型并生成评估与可解释性结果。模型采用**CORAL 特征对齐 + 标准化 + 带类权重的逻辑回归**结构：
+在完成特征构建后，可直接调用 `scripts/train_task2_model.py` 训练源域诊断模型并生成评估与可解释性结果。模型采用**CORAL 特征对齐 + 标准化 + 带类权重的逻辑回归**结构，默认执行“正常 + 三类故障”的四分类任务，若输入特征表缺少某一预期类别，会在日志中给出提示并在分类报告、混淆矩阵中保留该类别的中文列：
 
 1. **事前可解释性**：模型仅使用任务1已定义的统计/频谱/包络特征，且在训练前自动剔除近乎常数的列；
 2. **迁移过程可解释性**：通过 `CoralAligner` 将源域特征白化，可在后续任务中注入目标域统计量完成快速迁移；
@@ -143,7 +144,7 @@ python scripts/run_task3_transfer.py --config config/task3_config.yaml
 - **CORAL + 伪标签**：复用任务2的 `SourceDiagnosisConfig`，结合目标域均值/协方差完成对齐，按置信度自训练伪标签。
 - **对齐诊断**：输出 MMD/CORAL 指标、t-SNE 嵌入（标签颜色 = 源域真实标签 + 目标域预测标签），直观呈现伪标签前后的分类边界。
 - **模型存档**：保存 `transfer_model.joblib` 供任务4直接加载解释。
-- **可视化补强**：附带 `伪标签演化曲线.png`、`多模态特征分布对比.png`、`多模态时频示例.png`，形成可直接用于汇报的中文图件。
+- **可视化补强**：全中文图件，覆盖双轴伪标签演化曲线、结合效应量与相对差值的《多模态特征分布对比.png》、带阈值区域与趋势线的《伪标签一致性散点.png》以及《多模态时频示例.png》，可直接嵌入技术汇报。
 
 详见 [`TASK3_REPORT.md`](TASK3_REPORT.md)。
 
@@ -157,9 +158,9 @@ python scripts/run_task4_interpretability.py --config config/task4_config.yaml
 
 输出包括：
 
-- `global_feature_effects.csv` + `global_importance.png`：多类别系数/赔率比排行及类别聚合。
-- `domain_shift_contributions.csv` + `domain_shift.png`：源/目标域均值差异对 logit 的贡献度。
-- `local_explanation.csv` + `local_explanation.png`：指定样本的特征贡献排序，可用于专家核验。
+- `global_feature_effects.csv` + `global_importance.png`：多类别系数/赔率比排行及类别聚合，列出中文类别与特征名称。
+- `domain_shift_contributions.csv` + `domain_shift.png`：分特征×类别汇总源/目标域均值差异对 logit 的贡献度，采用分组水平条形图直观比较正负影响。
+- `local_explanation.csv` + `local_explanation.png`：指定样本的特征贡献排序，带中文目标类别标题与贡献值标注，方便专家核验。
 - `interpretability_summary.json`：汇总解释性分析的核心统计。
 
 详细说明参见 [`TASK4_REPORT.md`](TASK4_REPORT.md)。

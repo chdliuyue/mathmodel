@@ -38,6 +38,15 @@ DEFAULT_EXCLUDE_COLUMNS = {
 }
 
 
+EXPECTED_LABELS: Sequence[str] = (
+    "normal",
+    "ball_fault",
+    "inner_race_fault",
+    "outer_race_fault",
+)
+EXPECTED_LABEL_SET = set(EXPECTED_LABELS)
+
+
 @dataclass
 class TrainTestSplitConfig:
     """Configuration controlling the train/test split for the source domain."""
@@ -322,6 +331,23 @@ def train_source_domain_model(data: pd.DataFrame, config: SourceDiagnosisConfig)
     if usable.empty:
         raise ValueError("No labeled samples available for training")
 
+    label_series = usable[config.label_column].astype(str)
+    unexpected_labels = sorted(set(label_series) - EXPECTED_LABEL_SET)
+    if unexpected_labels:
+        LOGGER.warning(
+            "检测到非预期类别，将在训练时忽略：%s",
+            ", ".join(unexpected_labels),
+        )
+        usable = usable[label_series.isin(EXPECTED_LABEL_SET)].copy()
+        label_series = usable[config.label_column].astype(str)
+    if usable.empty:
+        raise ValueError("No labeled samples available for training after filtering unexpected classes")
+
+    present_labels = sorted(set(label_series))
+    missing_labels = [label for label in EXPECTED_LABELS if label not in present_labels]
+    if missing_labels:
+        LOGGER.warning("训练集中缺少以下预期类别：%s", ", ".join(missing_labels))
+
     feature_columns = _resolve_feature_columns(usable, config)
     feature_columns = _drop_near_constant_columns(usable, feature_columns)
     if not feature_columns:
@@ -382,12 +408,19 @@ def train_source_domain_model(data: pd.DataFrame, config: SourceDiagnosisConfig)
     test_accuracy = accuracy_score(y_test, y_pred)
     train_accuracy = accuracy_score(y_train, pipeline.predict(X_train))
     macro_f1 = f1_score(y_test, y_pred, average="macro")
-    report_dict = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+    evaluation_labels = list(EXPECTED_LABELS)
+    report_dict = classification_report(
+        y_test,
+        y_pred,
+        labels=evaluation_labels,
+        output_dict=True,
+        zero_division=0,
+    )
     report_df = pd.DataFrame(report_dict).transpose()
 
     classes = list(pipeline.named_steps["classifier"].classes_)
-    conf_matrix = confusion_matrix(y_test, y_pred, labels=classes)
-    conf_df = pd.DataFrame(conf_matrix, index=classes, columns=classes)
+    conf_matrix = confusion_matrix(y_test, y_pred, labels=evaluation_labels)
+    conf_df = pd.DataFrame(conf_matrix, index=evaluation_labels, columns=evaluation_labels)
 
     classifier = pipeline.named_steps["classifier"]
     coef_records: List[Dict[str, float]] = []

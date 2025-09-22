@@ -149,8 +149,8 @@ def _ensure_directory(path: Path) -> Path:
 
 
 def _resolve_label_order(classes: Sequence[str]) -> List[str]:
-    base = [label for label in LABEL_DISPLAY_ORDER if label in classes]
-    extras = [str(label) for label in classes if label not in base]
+    base = [str(label) for label in LABEL_DISPLAY_ORDER]
+    extras = [str(label) for label in classes if str(label) not in base]
     return base + extras
 
 

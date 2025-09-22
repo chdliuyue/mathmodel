@@ -13,8 +13,8 @@
 底层实现位于 `src/tasks/task4/interpretability.py`，主要函数包括：
 
 - `compute_global_feature_effects`：统计每个类别/特征的系数、绝对系数与赔率比，并按特征类别聚合。
-- `compute_domain_shift_contributions`：比较源/目标域特征均值差异，乘以系数得到 logit 贡献；排序后即可定位造成域偏移的关键特征。
-- `explain_instance`：提取单条样本经 pipeline 变换后的特征向量，与系数相乘得到 logit 贡献，同时保留原始取值，便于理解幅度。
+- `compute_domain_shift_contributions`：比较源/目标域特征均值差异，乘以系数得到 logit 贡献；输出中文类别列并在绘图时按“特征×类别”分组，便于定位造成域偏移的关键因素。
+- `explain_instance`：提取单条样本经 pipeline 变换后的特征向量，与系数相乘得到 logit 贡献，同时保留原始取值与目标类别中文名称，便于理解幅度。
 - 三个 `plot_*` 方法负责绘制水平条形图，默认自动控制纵轴密度，保证在多个特征时仍易于阅读。
 
 ## 2. 运行方式
@@ -30,8 +30,8 @@ python scripts/run_task4_interpretability.py \
 
 - `global_feature_effects.csv`：按类别列出所有特征的系数、绝对值、赔率比，并附上中文释义与特征类别。
 - `global_feature_categories.csv`：按类别汇总绝对系数和，便于宏观判断“时域/频域/包络/时频”等模块的重要性。
-- `domain_shift_contributions.csv`：每个类别下的 `logit_contribution` 与 `delta`（均值差），帮助定位目标域为何偏离。
-- `local_explanation.csv`：指定样本的特征贡献明细，包括原始值、模型输入值、系数、logit 贡献。
+- `domain_shift_contributions.csv`：每个类别下的 `logit_contribution` 与 `delta`（均值差），配合 `domain_shift.png` 的分组水平条形图快速识别正负影响。
+- `local_explanation.csv`：指定样本的特征贡献明细，包括原始值、模型输入值、系数、logit 贡献及目标类别中文名称，辅助专家复核。
 - 三张 PNG 图对应该三张表格，便于直接放入报告或演示文稿。
 - `interpretability_summary.json` 汇总了特征数量、伪标签规模、局部解释所选样本等关键信息。
 

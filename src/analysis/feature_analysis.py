@@ -688,18 +688,62 @@ def plot_envelope_spectrum(
         LOGGER.warning("包络谱计算结果为空，跳过绘图")
         return pd.DataFrame()
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - register 3D projection
+
     log_spectrum = np.log10(np.maximum(spectrum, LOG_EPS))
-    ax.plot(freqs, log_spectrum, color="#d62728", linewidth=0.9)
-    ax.set_title(f"包络谱图 – {summary.file_id} / {record.channel}")
+
+    downsample = max(1, int(np.ceil(log_spectrum.size / 600)))
+    freq_sampled = freqs[::downsample]
+    spec_sampled = log_spectrum[::downsample]
+    if freq_sampled.size == 0:
+        freq_sampled = freqs
+        spec_sampled = log_spectrum
+    elif freq_sampled[-1] != freqs[-1]:
+        freq_sampled = np.append(freq_sampled, freqs[-1])
+        spec_sampled = np.append(spec_sampled, log_spectrum[-1])
+
+    ridge_depth = np.linspace(0.0, 1.0, 32)
+    surface_x, surface_y = np.meshgrid(freq_sampled, ridge_depth)
+    surface_z = np.tile(spec_sampled, (ridge_depth.size, 1))
+
+    fig = plt.figure(figsize=(10.5, 6.2))
+    ax = fig.add_subplot(111, projection="3d")
+    surface = ax.plot_surface(
+        surface_x,
+        surface_y,
+        surface_z,
+        cmap="viridis",
+        linewidth=0.0,
+        antialiased=True,
+        alpha=0.88,
+    )
+
+    crest_y = float(ridge_depth.max() + 0.12)
+    ax.plot(freq_sampled, np.full_like(freq_sampled, crest_y), spec_sampled, color="#d62728", linewidth=1.6)
+
+    z_min = float(np.min(spec_sampled)) if spec_sampled.size else 0.0
+    z_max = float(np.max(spec_sampled)) if spec_sampled.size else 0.0
+    freq_min = float(freqs.min()) if freqs.size else 0.0
+    freq_max = float(freqs.max()) if freqs.size else 1.0
+    freq_range = max(freq_max - freq_min, 1.0)
+    depth_range = crest_y + 0.4
+    amplitude_range = max(z_max - z_min, 1.0)
+
+    ax.set_title(f"三维包络谱 – {summary.file_id} / {record.channel}")
     ax.set_xlabel("频率 [Hz]")
-    ax.set_ylabel("log10(包络幅值)")
-    ax.grid(True, linestyle="--", alpha=0.3)
-    ax.text(
+    ax.set_ylabel("虚拟深度")
+    ax.set_zlabel("log10(包络幅值)")
+    ax.set_xlim(freq_min, freq_max)
+    ax.set_ylim(-0.05, crest_y + 0.35)
+    ax.set_box_aspect((freq_range, depth_range, amplitude_range))
+    ax.set_yticks([])
+    ax.view_init(elev=26, azim=-125)
+
+    fig.colorbar(surface, ax=ax, shrink=0.55, pad=0.12, label="log10(包络幅值)")
+    fig.text(
         0.02,
         0.94,
-        "已对幅值取log10以突出长尾细节",
-        transform=ax.transAxes,
+        "沿虚拟深度复制包络谱以强化能量起伏，可旋转观察故障频率",
         fontsize="small",
         color="#555555",
     )
@@ -708,8 +752,7 @@ def plot_envelope_spectrum(
     label_positions: List[float] = []
     amplitude_span = float(np.max(log_spectrum) - np.min(log_spectrum)) if log_spectrum.size else 1.0
     vertical_spacing = max(amplitude_span * 0.08, 0.2)
-    freq_span = float(freqs.max() - freqs.min()) if freqs.size else 1.0
-    horizontal_offset = max(freq_span * 0.02, 5.0)
+    annotation_y = crest_y + 0.18
     if bearing is not None and rpm is not None:
         summary_df = summarise_fault_frequency_response(freqs, spectrum, bearing, float(rpm), tolerance=tolerance)
         for _, row in summary_df.iterrows():
@@ -721,38 +764,38 @@ def plot_envelope_spectrum(
             if freq_value > freqs.max():
                 continue
             label = FAULT_LABEL_MAP.get(str(row.get("fault", "")).upper(), str(row.get("fault", "")))
-            ax.axvline(freq_value, color="#1f77b4", linestyle="--", alpha=0.6)
+            base_x = float(freq_value)
             if peak_frequency is not None and peak_amplitude is not None and np.isfinite(peak_amplitude):
-                peak_log = float(np.log10(max(peak_amplitude, LOG_EPS)))
-                ax.scatter([peak_frequency], [peak_log], color="#ff7f0e", s=24, zorder=5)
-                base_x = float(peak_frequency)
-                base_y = peak_log
+                scatter_x = float(peak_frequency)
+                base_z = float(np.log10(max(peak_amplitude, LOG_EPS)))
             else:
-                base_x = float(freq_value)
-                base_y = float(np.max(log_spectrum)) if log_spectrum.size else 0.0
+                scatter_x = base_x
+                base_z = float(np.max(log_spectrum)) if log_spectrum.size else 0.0
 
-            label_y = base_y
-            while any(abs(label_y - prev) < vertical_spacing for prev in label_positions):
-                label_y += vertical_spacing
-            label_positions.append(label_y)
+            label_z = base_z
+            while any(abs(label_z - prev) < vertical_spacing for prev in label_positions):
+                label_z += vertical_spacing
+            label_positions.append(label_z)
 
-            offset = horizontal_offset
-            text_x = float(freq_value) + offset
-            horizontal_alignment = "left"
-            if text_x > float(freqs.max()):
-                text_x = float(freq_value) - offset
-                horizontal_alignment = "right"
-
-            ax.annotate(
+            ax.plot(
+                [base_x, base_x],
+                [0.0, annotation_y - 0.06],
+                [base_z, base_z],
+                color="#1f77b4",
+                linestyle="--",
+                linewidth=0.9,
+                alpha=0.7,
+            )
+            ax.scatter([scatter_x], [0.0], [base_z], color="#ff7f0e", s=42, depthshade=True, zorder=5)
+            ax.text(
+                base_x,
+                annotation_y,
+                label_z,
                 label,
-                xy=(base_x, base_y),
-                xycoords="data",
-                xytext=(text_x, label_y),
-                textcoords="data",
-                arrowprops={"arrowstyle": "->", "color": "#1f77b4", "lw": 0.8, "alpha": 0.7},
-                horizontalalignment=horizontal_alignment,
-                verticalalignment="bottom",
+                color="#1f77b4",
                 fontsize="small",
+                ha="center",
+                va="bottom",
             )
 
     fig.tight_layout()
