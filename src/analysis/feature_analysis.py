@@ -690,17 +690,22 @@ def plot_envelope_spectrum(
 
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - register 3D projection
 
-    log_spectrum = np.log10(np.maximum(spectrum, LOG_EPS))
+    magnitude = np.maximum(spectrum, LOG_EPS)
+    max_magnitude = float(np.max(magnitude)) if magnitude.size else 0.0
+    if max_magnitude > 0.0:
+        display_spectrum = 20.0 * np.log10(magnitude / max_magnitude)
+    else:
+        display_spectrum = np.zeros_like(magnitude)
 
-    downsample = max(1, int(np.ceil(log_spectrum.size / 600)))
+    downsample = max(1, int(np.ceil(display_spectrum.size / 600)))
     freq_sampled = freqs[::downsample]
-    spec_sampled = log_spectrum[::downsample]
+    spec_sampled = display_spectrum[::downsample]
     if freq_sampled.size == 0:
         freq_sampled = freqs
-        spec_sampled = log_spectrum
+        spec_sampled = display_spectrum
     elif freq_sampled[-1] != freqs[-1]:
         freq_sampled = np.append(freq_sampled, freqs[-1])
-        spec_sampled = np.append(spec_sampled, log_spectrum[-1])
+        spec_sampled = np.append(spec_sampled, display_spectrum[-1])
 
     ridge_depth = np.linspace(0.0, 1.0, 32)
     surface_x, surface_y = np.meshgrid(freq_sampled, ridge_depth)
@@ -721,40 +726,49 @@ def plot_envelope_spectrum(
     crest_y = float(ridge_depth.max() + 0.12)
     ax.plot(freq_sampled, np.full_like(freq_sampled, crest_y), spec_sampled, color="#d62728", linewidth=1.6)
 
-    z_min = float(np.min(spec_sampled)) if spec_sampled.size else 0.0
-    z_max = float(np.max(spec_sampled)) if spec_sampled.size else 0.0
+    display_min = float(display_spectrum.min()) if display_spectrum.size else 0.0
+    display_max = float(display_spectrum.max()) if display_spectrum.size else 0.0
     freq_min = float(freqs.min()) if freqs.size else 0.0
     freq_max = float(freqs.max()) if freqs.size else 1.0
     freq_range = max(freq_max - freq_min, 1.0)
     depth_range = crest_y + 0.4
-    amplitude_range = max(z_max - z_min, 1.0)
+    amplitude_span = max(display_max - display_min, 1.0)
+    z_padding = max(amplitude_span * 0.15, 3.0)
+    z_lower = display_min - z_padding
+    z_upper = display_max + z_padding
+
+    target_ratio = 0.18
+    vertical_scale = max(1.0, (freq_range * target_ratio) / max(amplitude_span, 1e-6))
+    adjusted_amplitude = amplitude_span * vertical_scale
 
     ax.set_title(f"三维包络谱 – {summary.file_id} / {record.channel}")
     ax.set_xlabel("频率 [Hz]")
     ax.set_ylabel("虚拟深度")
-    ax.set_zlabel("log10(包络幅值)")
+    ax.set_zlabel("包络幅值 [dB]")
     ax.set_xlim(freq_min, freq_max)
     ax.set_ylim(-0.05, crest_y + 0.35)
-    ax.set_box_aspect((freq_range, depth_range, amplitude_range))
+    ax.set_zlim(z_lower, z_upper)
+    ax.set_box_aspect((freq_range, depth_range, adjusted_amplitude))
     ax.set_yticks([])
-    ax.view_init(elev=26, azim=-125)
+    ax.view_init(elev=28, azim=-120)
 
-    fig.colorbar(surface, ax=ax, shrink=0.55, pad=0.12, label="log10(包络幅值)")
+    fig.colorbar(surface, ax=ax, shrink=0.55, pad=0.12, label="相对包络幅值 [dB]")
     fig.text(
         0.02,
         0.94,
-        "沿虚拟深度复制包络谱以强化能量起伏，可旋转观察故障频率",
+        "包络幅值已归一化到峰值，沿虚拟深度复制以便观察频率特征",
         fontsize="small",
         color="#555555",
     )
 
     summary_df = pd.DataFrame()
     label_positions: List[float] = []
-    amplitude_span = float(np.max(log_spectrum) - np.min(log_spectrum)) if log_spectrum.size else 1.0
+    amplitude_span = float(np.ptp(display_spectrum)) if display_spectrum.size else 1.0
     vertical_spacing = max(amplitude_span * 0.08, 0.2)
     annotation_y = crest_y + 0.18
     if bearing is not None and rpm is not None:
         summary_df = summarise_fault_frequency_response(freqs, spectrum, bearing, float(rpm), tolerance=tolerance)
+        z_upper_limit = z_upper - vertical_spacing * 0.5
         for _, row in summary_df.iterrows():
             freq_value = row.get("predicted_frequency")
             peak_frequency = row.get("peak_frequency")
@@ -767,14 +781,24 @@ def plot_envelope_spectrum(
             base_x = float(freq_value)
             if peak_frequency is not None and peak_amplitude is not None and np.isfinite(peak_amplitude):
                 scatter_x = float(peak_frequency)
-                base_z = float(np.log10(max(peak_amplitude, LOG_EPS)))
+                if max_magnitude > 0.0:
+                    base_z = float(20.0 * np.log10(max(peak_amplitude, LOG_EPS) / max_magnitude))
+                else:
+                    base_z = float(display_max)
             else:
                 scatter_x = base_x
-                base_z = float(np.max(log_spectrum)) if log_spectrum.size else 0.0
+                base_z = float(display_max) if display_spectrum.size else 0.0
 
             label_z = base_z
             while any(abs(label_z - prev) < vertical_spacing for prev in label_positions):
                 label_z += vertical_spacing
+            if label_z > z_upper_limit:
+                label_z = z_upper_limit
+                while (
+                    any(abs(label_z - prev) < vertical_spacing for prev in label_positions)
+                    and label_z > z_lower + vertical_spacing
+                ):
+                    label_z -= vertical_spacing
             label_positions.append(label_z)
 
             ax.plot(
