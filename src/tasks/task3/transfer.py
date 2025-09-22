@@ -1,8 +1,9 @@
 """Transfer learning pipeline for adapting the source-domain model to the target domain."""
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import logging
 
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
+from sklearn.neighbors import NearestNeighbors
 
 from ...analysis.feature_analysis import compute_domain_alignment_metrics
 from ...analysis.feature_analysis import run_tsne  # re-export convenience
@@ -28,6 +30,7 @@ class PseudoLabelConfig:
     confidence_threshold: float = 0.95
     max_iterations: int = 2
     max_ratio: float = 0.4  # Relative to the number of labelled source samples
+    consistency_threshold: float = 0.6
 
 
 @dataclass
@@ -47,6 +50,7 @@ class TransferResult:
     base_result: TrainingResult
     final_pipeline: Pipeline
     feature_columns: List[str]
+    modal_feature_groups: Dict[str, List[str]]
     source_features: pd.DataFrame
     target_features: pd.DataFrame
     combined_before: pd.DataFrame
@@ -58,6 +62,8 @@ class TransferResult:
     pseudo_labels: pd.DataFrame
     pseudo_label_history: List[Dict[str, float]]
     time_frequency_features: List[str]
+    consistency_features: List[str]
+    pseudo_quality: pd.DataFrame
 
 
 def _infer_sampling_rate(row: Mapping[str, any]) -> float:
@@ -141,6 +147,102 @@ def _select_metadata(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFram
     return frame[available].reset_index(drop=True)
 
 
+def _identify_modal_feature_groups(feature_columns: Sequence[str]) -> Dict[str, List[str]]:
+    groups = {
+        "time": [column for column in feature_columns if column.startswith("time_")],
+        "stft": [column for column in feature_columns if column.startswith("tf_stft_")],
+        "cwt": [column for column in feature_columns if column.startswith("tf_cwt_")],
+        "mel": [column for column in feature_columns if column.startswith("tf_mel_")],
+    }
+    return {name: cols for name, cols in groups.items() if cols}
+
+
+def _prepare_matrix(frame: pd.DataFrame, columns: Sequence[str]) -> np.ndarray:
+    if not columns:
+        return np.zeros((len(frame), 0), dtype=float)
+    matrix = frame[list(columns)].astype(float).to_numpy(copy=True)
+    if matrix.size == 0:
+        return np.zeros((len(frame), len(columns)), dtype=float)
+    with np.errstate(all="ignore"):
+        col_means = np.nanmean(matrix, axis=0)
+    col_means = np.where(np.isfinite(col_means), col_means, 0.0)
+    nan_mask = np.isnan(matrix)
+    if nan_mask.any():
+        matrix[nan_mask] = np.take(col_means, np.where(nan_mask)[1])
+    return np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _majority_vote(labels: Sequence[str]) -> str:
+    counter = Counter(label for label in labels if label is not None and label != "")
+    if not counter:
+        return ""
+    most_common = counter.most_common()
+    top_count = most_common[0][1]
+    top_labels = [label for label, count in most_common if count == top_count]
+    return str(sorted(top_labels)[0])
+
+
+def _nearest_modal_vote(
+    source_matrix: np.ndarray,
+    source_labels: Sequence[str],
+    target_matrix: np.ndarray,
+    n_neighbors: int = 5,
+) -> Tuple[List[str], np.ndarray]:
+    if source_matrix.size == 0 or target_matrix.size == 0:
+        return [""] * len(target_matrix), np.zeros(len(target_matrix), dtype=float)
+    neighbors = max(1, min(n_neighbors, source_matrix.shape[0]))
+    model = NearestNeighbors(n_neighbors=neighbors, metric="euclidean")
+    model.fit(source_matrix)
+    distances, indices = model.kneighbors(target_matrix, return_distance=True)
+    source_labels = np.asarray(list(source_labels), dtype=object)
+    votes: List[str] = []
+    for row in indices:
+        labels = [str(source_labels[idx]) for idx in row]
+        votes.append(_majority_vote(labels))
+    mean_distances = distances.mean(axis=1) if distances.size else np.zeros(len(target_matrix), dtype=float)
+    return votes, mean_distances
+
+
+def _evaluate_multimodal_consistency(
+    source_frame: pd.DataFrame,
+    target_frame: pd.DataFrame,
+    predicted_labels: Sequence[str],
+    label_column: str,
+    feature_groups: Dict[str, List[str]],
+    n_neighbors: int = 5,
+) -> pd.DataFrame:
+    if not feature_groups:
+        return pd.DataFrame(index=target_frame.index)
+
+    label_series = source_frame[label_column]
+    valid_mask = label_series.notna()
+    label_series = label_series[valid_mask].astype(str)
+    records: Dict[str, Any] = {
+        "predicted_label": list(predicted_labels),
+    }
+
+    if label_series.empty:
+        return pd.DataFrame(records, index=target_frame.index)
+
+    for name, columns in feature_groups.items():
+        src_matrix = _prepare_matrix(source_frame.loc[valid_mask], columns)
+        tgt_matrix = _prepare_matrix(target_frame, columns)
+        votes, distances = _nearest_modal_vote(src_matrix, label_series, tgt_matrix, n_neighbors=n_neighbors)
+        records[f"{name}_vote"] = votes
+        records[f"{name}_distance"] = distances
+        predicted = np.asarray(predicted_labels, dtype=object)
+        agreement = (predicted == np.asarray(votes, dtype=object)).astype(float)
+        records[f"{name}_agree"] = agreement
+
+    frame = pd.DataFrame(records, index=target_frame.index)
+    agree_columns = [column for column in frame.columns if column.endswith("_agree")]
+    if agree_columns:
+        frame["consistency_score"] = frame[agree_columns].mean(axis=1)
+    else:
+        frame["consistency_score"] = 0.0
+    return frame
+
+
 def _predict_with_pipeline(
     pipeline: Pipeline,
     frame: pd.DataFrame,
@@ -172,10 +274,10 @@ def _apply_pseudo_labelling(
     label_column: str,
     metadata_columns: Sequence[str],
     config: PseudoLabelConfig,
-) -> Tuple[Pipeline, pd.DataFrame, List[Dict[str, float]]]:
+) -> Tuple[Pipeline, pd.DataFrame, List[Dict[str, float]], pd.DataFrame]:
     classifier = base_pipeline.named_steps.get("classifier")
     if not config.enabled or classifier is None or not hasattr(classifier, "predict_proba"):
-        return base_pipeline, pd.DataFrame(), []
+        return base_pipeline, pd.DataFrame(), [], pd.DataFrame()
 
     X_source = source_frame[feature_columns].astype(float)
     y_source = source_frame[label_column].astype(str)
@@ -184,6 +286,7 @@ def _apply_pseudo_labelling(
     current_pipeline = base_pipeline
     pseudo_records: List[pd.DataFrame] = []
     history: List[Dict[str, float]] = []
+    quality_records: List[pd.DataFrame] = []
     used_mask = np.zeros(len(target_frame), dtype=bool)
     total_source = len(source_frame)
     if config.max_ratio > 0:
@@ -191,12 +294,22 @@ def _apply_pseudo_labelling(
     else:
         max_total = None
     total_selected = 0
+    feature_groups = _identify_modal_feature_groups(feature_columns)
 
     for iteration in range(config.max_iterations):
         proba = current_pipeline.predict_proba(X_target)
         predictions = current_pipeline.predict(X_target)
         max_proba = proba.max(axis=1)
+        consistency_df = _evaluate_multimodal_consistency(
+            source_frame,
+            target_frame,
+            predictions.astype(str),
+            label_column,
+            feature_groups,
+        )
+        consistency_scores = consistency_df.get("consistency_score", pd.Series(0.0, index=target_frame.index)).astype(float)
         candidate_mask = (max_proba >= config.confidence_threshold) & (~used_mask)
+        candidate_mask &= consistency_scores.to_numpy() >= float(config.consistency_threshold)
         candidate_indices = np.where(candidate_mask)[0]
         if candidate_indices.size == 0:
             break
@@ -210,6 +323,11 @@ def _apply_pseudo_labelling(
         selected_rows["pseudo_probability"] = max_proba[candidate_indices]
         selected_rows["pseudo_iteration"] = iteration + 1
         selected_rows["dataset"] = "target_pseudo"
+        selected_rows["consistency_score"] = consistency_scores.iloc[candidate_indices].to_numpy()
+        for column in consistency_df.columns:
+            if column in selected_rows.columns:
+                continue
+            selected_rows[column] = consistency_df.iloc[candidate_indices][column].to_numpy()
         pseudo_records.append(selected_rows)
         used_mask[candidate_indices] = True
         total_selected += len(candidate_indices)
@@ -222,23 +340,39 @@ def _apply_pseudo_labelling(
         _set_target_statistics(next_pipeline, X_target)
         current_pipeline = next_pipeline
 
+        selected_scores = consistency_scores.iloc[candidate_indices].to_numpy()
         history.append(
             {
                 "iteration": float(iteration + 1),
                 "new_samples": float(len(candidate_indices)),
                 "cumulative_pseudo": float(total_selected),
                 "threshold": float(config.confidence_threshold),
+                "consistency_threshold": float(config.consistency_threshold),
                 "probability_mean": float(np.mean(max_proba[candidate_indices])),
                 "probability_min": float(np.min(max_proba[candidate_indices])),
                 "probability_max": float(np.max(max_proba[candidate_indices])),
+                "consistency_mean": float(np.mean(selected_scores)) if selected_scores.size else 0.0,
+                "consistency_min": float(np.min(selected_scores)) if selected_scores.size else 0.0,
+                "consistency_max": float(np.max(selected_scores)) if selected_scores.size else 0.0,
             }
         )
+
+        metadata_subset = target_frame.iloc[candidate_indices][list(metadata_columns) if metadata_columns else []]
+        quality_record = consistency_df.iloc[candidate_indices].copy()
+        quality_record = quality_record.reset_index(drop=False).rename(columns={"index": "row_index"})
+        quality_record["pseudo_iteration"] = iteration + 1
+        quality_record["max_probability"] = max_proba[candidate_indices]
+        quality_record["consistency_threshold"] = float(config.consistency_threshold)
+        if not metadata_subset.empty:
+            quality_record = pd.concat([quality_record.reset_index(drop=True), metadata_subset.reset_index(drop=True)], axis=1)
+        quality_records.append(quality_record)
 
         if max_total is not None and total_selected >= max_total:
             break
 
     pseudo_df = pd.concat(pseudo_records, ignore_index=True) if pseudo_records else pd.DataFrame()
-    return current_pipeline, pseudo_df, history
+    quality_df = pd.concat(quality_records, ignore_index=True) if quality_records else pd.DataFrame()
+    return current_pipeline, pseudo_df, history, quality_df
 
 
 def run_transfer_learning(
@@ -256,6 +390,7 @@ def run_transfer_learning(
 
     base_result = train_source_domain_model(augmented_source, config.diagnosis)
     feature_columns = base_result.feature_columns
+    modal_feature_groups = _identify_modal_feature_groups(feature_columns)
 
     target_matrix = augmented_target[feature_columns].astype(float)
     _set_target_statistics(base_result.pipeline, target_matrix)
@@ -290,10 +425,11 @@ def run_transfer_learning(
     final_pipeline = base_result.pipeline
     pseudo_labels = pd.DataFrame()
     pseudo_history: List[Dict[str, float]] = []
+    pseudo_quality = pd.DataFrame()
 
     if config.pseudo_label.enabled:
         LOGGER.info("Applying pseudo-labelling strategy with threshold %.2f", config.pseudo_label.confidence_threshold)
-        final_pipeline, pseudo_labels, pseudo_history = _apply_pseudo_labelling(
+        final_pipeline, pseudo_labels, pseudo_history, pseudo_quality = _apply_pseudo_labelling(
             base_result.pipeline,
             feature_columns,
             augmented_source,
@@ -326,12 +462,18 @@ def run_transfer_learning(
     combined_aligned = pd.concat([final_source_df, final_target_df], ignore_index=True)
     alignment_after = compute_domain_alignment_metrics(combined_aligned)
 
-    time_frequency_features = [column for column in augmented_source.columns if column.startswith("tf_")]
+    time_frequency_features = [
+        column
+        for column in augmented_source.columns
+        if column.startswith("tf_") and not column.startswith("tf_consistency_")
+    ]
+    consistency_features = [column for column in augmented_source.columns if column.startswith("tf_consistency_")]
 
     return TransferResult(
         base_result=base_result,
         final_pipeline=final_pipeline,
         feature_columns=list(feature_columns),
+        modal_feature_groups=modal_feature_groups,
         source_features=augmented_source,
         target_features=augmented_target,
         combined_before=combined_before,
@@ -343,6 +485,8 @@ def run_transfer_learning(
         pseudo_labels=pseudo_labels,
         pseudo_label_history=pseudo_history,
         time_frequency_features=time_frequency_features,
+        consistency_features=consistency_features,
+        pseudo_quality=pseudo_quality,
     )
 
 
