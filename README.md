@@ -164,6 +164,20 @@ python scripts/run_task4_interpretability.py --config config/task4_config.yaml
 
 详细说明参见 [`TASK4_REPORT.md`](TASK4_REPORT.md)。
 
+## 质量自检与快速验证
+
+为确保脚本入口与依赖环境配置正确，建议在拉取或修改代码后执行以下快速检查：
+
+```bash
+python -m compileall src scripts              # 校验源码语法是否通过
+python scripts/extract_features.py --help     # 确认特征提取脚本可正确加载
+python scripts/train_task2_model.py --help    # 确认源域建模脚本入口正常
+python scripts/run_task3_transfer.py --help   # 确认迁移诊断脚本参数解析无误
+python scripts/run_task4_interpretability.py --help  # 确认可解释性脚本可用
+```
+
+上述命令不会真正跑完全部流水线，但能及时发现依赖缺失、路径配置或语法问题。若需完整验证，可结合 `config/` 下的示例 YAML，在本地或服务器执行端到端流程，并对照 `artifacts/` 输出核对结果。
+
 ## 下一步建议
 
 - 在现有全流程基础上引入更多轴承类型或不同采样率的数据，验证筛选策略与特征体系的泛化能力；
