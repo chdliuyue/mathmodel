@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import json
 import logging
@@ -34,6 +34,11 @@ from ...modeling import (
     train_source_domain_model,
 )
 from ...analysis.feature_analysis import configure_chinese_font
+from ...analysis.feature_dictionary import (
+    LABEL_DISPLAY_ORDER,
+    build_feature_name_map,
+    build_label_name_map,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -142,6 +147,156 @@ def _ensure_directory(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
 
+
+def _resolve_label_order(classes: Sequence[str]) -> List[str]:
+    base = [label for label in LABEL_DISPLAY_ORDER if label in classes]
+    extras = [str(label) for label in classes if label not in base]
+    return base + extras
+
+
+def _localise_confusion_dataframe(
+    confusion_df: pd.DataFrame, class_order: Sequence[str], label_map: Dict[str, str]
+) -> pd.DataFrame:
+    classes = [str(label) for label in class_order]
+    if confusion_df.empty:
+        base = pd.DataFrame(0, index=classes, columns=classes, dtype=int)
+    else:
+        base = confusion_df.reindex(index=classes, columns=classes, fill_value=0)
+    base = base.astype(int)
+    display_index = [label_map.get(label, label) for label in classes]
+    display_columns = [f"预测：{label_map.get(label, label)}" for label in classes]
+    localised = base.copy()
+    localised.insert(0, "真实标签编码", classes)
+    localised.index = display_index
+    localised.columns = ["真实标签编码"] + display_columns
+    return localised
+
+
+def _localise_classification_report(
+    report: pd.DataFrame, label_map: Dict[str, str]
+) -> pd.DataFrame:
+    if report.empty:
+        return report
+    column_map = {
+        "precision": "精确率",
+        "recall": "召回率",
+        "f1-score": "F1值",
+        "support": "样本数",
+    }
+    rows: List[Dict[str, Any]] = []
+    for index, row in report.iterrows():
+        code = str(index)
+        key_lower = code.lower()
+        if code in label_map:
+            name = label_map[code]
+        elif key_lower == "accuracy":
+            name = "总体准确率"
+        elif key_lower == "macro avg":
+            name = "宏平均"
+        elif key_lower == "weighted avg":
+            name = "加权平均"
+        else:
+            name = code
+        record: Dict[str, Any] = {"指标编码": code, "指标名称": name}
+        for column, value in row.items():
+            record[column_map.get(column, column)] = value
+        rows.append(record)
+    return pd.DataFrame(rows)
+
+
+def _localise_coefficients(
+    coefficients: pd.DataFrame,
+    label_map: Dict[str, str],
+    feature_map: Dict[str, str],
+) -> pd.DataFrame:
+    if coefficients.empty:
+        return coefficients
+    localised = coefficients.copy()
+    feature_map = dict(feature_map)
+    feature_map.setdefault("__intercept__", "截距")
+    localised["类别编码"] = localised["class"].astype(str)
+    localised["类别"] = localised["类别编码"].map(label_map).fillna(localised["类别编码"])
+    localised["特征编码"] = localised["feature"].astype(str)
+    localised["特征名称"] = localised["特征编码"].map(feature_map).fillna(localised["特征编码"])
+    renamed = localised.rename(
+        columns={
+            "coefficient": "回归系数",
+            "odds_ratio": "优势比",
+            "abs_coefficient": "系数绝对值",
+        }
+    )
+    columns = ["类别编码", "类别", "特征编码", "特征名称", "回归系数", "优势比", "系数绝对值"]
+    return renamed[columns]
+
+
+def _localise_permutation(
+    permutation: Optional[pd.DataFrame], feature_map: Dict[str, str]
+) -> Optional[pd.DataFrame]:
+    if permutation is None or permutation.empty:
+        return permutation
+    localised = permutation.copy()
+    localised["特征编码"] = localised["feature"].astype(str)
+    localised["特征名称"] = localised["特征编码"].map(feature_map).fillna(localised["特征编码"])
+    renamed = localised.rename(
+        columns={
+            "importance_mean": "重要度均值",
+            "importance_std": "重要度标准差",
+        }
+    )
+    columns = ["特征编码", "特征名称", "重要度均值", "重要度标准差"]
+    return renamed[columns]
+
+
+def _localise_predictions(predictions: pd.DataFrame, label_map: Dict[str, str]) -> pd.DataFrame:
+    if predictions.empty:
+        return predictions
+    rename_map: Dict[str, str] = {}
+    for column in predictions.columns:
+        if column == "true_label":
+            rename_map[column] = "真实标签编码"
+        elif column == "predicted_label":
+            rename_map[column] = "预测标签编码"
+        elif column.startswith("probability_"):
+            label = column[len("probability_") :]
+            rename_map[column] = f"概率_{label_map.get(label, label)}"
+    localised = predictions.rename(columns=rename_map)
+    if "真实标签编码" in localised.columns:
+        localised["真实标签"] = localised["真实标签编码"].map(label_map).fillna(localised["真实标签编码"])
+    if "预测标签编码" in localised.columns:
+        localised["预测标签"] = localised["预测标签编码"].map(label_map).fillna(localised["预测标签编码"])
+    preferred_order: List[str] = []
+    for pair in (("真实标签编码", "真实标签"), ("预测标签编码", "预测标签")):
+        for column in pair:
+            if column in localised.columns and column not in preferred_order:
+                preferred_order.append(column)
+    for column in localised.columns:
+        if column not in preferred_order:
+            preferred_order.append(column)
+    return localised[preferred_order]
+
+
+def _localise_feature_summary(
+    summary: pd.DataFrame, feature_map: Dict[str, str]
+) -> pd.DataFrame:
+    if summary.empty:
+        return summary
+    localised = summary.copy()
+    codes = localised.index.astype(str)
+    localised.insert(0, "特征编码", codes)
+    localised.insert(1, "特征名称", [feature_map.get(code, code) for code in codes])
+    localised.reset_index(drop=True, inplace=True)
+    column_map = {
+        "count": "样本数",
+        "mean": "均值",
+        "std": "标准差",
+        "min": "最小值",
+        "25%": "25%分位",
+        "50%": "中位数",
+        "75%": "75%分位",
+        "max": "最大值",
+    }
+    localised = localised.rename(columns=column_map)
+    return localised
 
 def _build_benchmark_estimator(spec: Dict[str, Any], random_state: int):
     model_type = str(spec.get("type", "")).lower()
@@ -264,20 +419,33 @@ def _evaluate_benchmarks(
     LOGGER.info("Benchmark comparison written to %s", comparison_path)
 
 
-def _plot_confusion_matrix_figure(confusion_df: pd.DataFrame, output_path: Path) -> None:
-    if confusion_df.empty:
+def _plot_confusion_matrix_figure(
+    confusion_df: pd.DataFrame, output_path: Path, class_labels: Optional[Sequence[str]] = None
+) -> None:
+    if confusion_df.empty and not class_labels:
         LOGGER.warning("空的混淆矩阵，跳过可视化绘制")
         return
 
     configure_chinese_font()
     import matplotlib.pyplot as plt
 
-    matrix = confusion_df.to_numpy(dtype=float)
-    classes = [str(label) for label in confusion_df.index]
+    if class_labels:
+        classes = [str(label) for label in class_labels]
+        if confusion_df.empty:
+            matrix_df = pd.DataFrame(0, index=classes, columns=classes, dtype=float)
+        else:
+            matrix_df = confusion_df.reindex(index=classes, columns=classes, fill_value=0)
+    else:
+        classes = [str(label) for label in confusion_df.index]
+        matrix_df = confusion_df.loc[classes, classes]
 
+    matrix = matrix_df.to_numpy(dtype=float)
     row_sums = matrix.sum(axis=1, keepdims=True)
     with np.errstate(divide="ignore", invalid="ignore"):
         normalised = np.divide(matrix, row_sums, out=np.zeros_like(matrix), where=row_sums != 0)
+
+    label_map = build_label_name_map(classes)
+    display_classes = [label_map.get(label, label) for label in classes]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     titles = ["混淆矩阵（数量）", "混淆矩阵（行归一化）"]
@@ -286,10 +454,10 @@ def _plot_confusion_matrix_figure(confusion_df: pd.DataFrame, output_path: Path)
 
     for ax, data, title, value_format in zip(axes, datasets, titles, formats):
         im = ax.imshow(data, cmap="Blues", vmin=0.0)
-        ax.set_xticks(np.arange(len(classes)))
-        ax.set_xticklabels(classes, rotation=45, ha="right")
-        ax.set_yticks(np.arange(len(classes)))
-        ax.set_yticklabels(classes)
+        ax.set_xticks(np.arange(len(display_classes)))
+        ax.set_xticklabels(display_classes, rotation=45, ha="right")
+        ax.set_yticks(np.arange(len(display_classes)))
+        ax.set_yticklabels(display_classes)
         ax.set_xlabel("预测标签")
         ax.set_ylabel("真实标签")
         ax.set_title(title)
@@ -334,6 +502,7 @@ def _plot_multiclass_roc(result: TrainingResult, output_path: Path) -> None:
 
     auc_scores: List[float] = []
     probabilities = np.asarray(result.y_proba, dtype=float)
+    label_map = build_label_name_map(result.classes)
     for idx, class_name in enumerate(result.classes):
         y_true = y_test_binarised[:, idx]
         if np.all(y_true == 0) or np.all(y_true == 1):
@@ -342,7 +511,8 @@ def _plot_multiclass_roc(result: TrainingResult, output_path: Path) -> None:
         fpr, tpr, _ = roc_curve(y_true, probabilities[:, idx])
         score = auc(fpr, tpr)
         auc_scores.append(score)
-        ax.plot(fpr, tpr, linewidth=1.6, label=f"{class_name} (AUC={score:.3f})")
+        display_name = label_map.get(str(class_name), str(class_name))
+        ax.plot(fpr, tpr, linewidth=1.6, label=f"{display_name} (AUC={score:.3f})")
 
     if auc_scores:
         micro_fpr, micro_tpr, _ = roc_curve(y_test_binarised.ravel(), probabilities.ravel())
@@ -414,24 +584,36 @@ def _write_outputs(
     with metrics_path.open("w", encoding="utf-8") as handle:
         json.dump(metrics_payload, handle, ensure_ascii=False, indent=2)
 
-    result.classification_report.to_csv(report_path, encoding="utf-8-sig")
-    result.confusion_matrix.to_csv(confusion_path, encoding="utf-8-sig")
-    result.coefficient_importance.to_csv(coefficients_path, index=False, encoding="utf-8-sig")
-    if result.permutation_importance is not None:
-        result.permutation_importance.to_csv(permutation_path, index=False, encoding="utf-8-sig")
-    result.predictions.to_csv(predictions_path, index=False, encoding="utf-8-sig")
+    label_order = _resolve_label_order(result.classes)
+    label_map = build_label_name_map(label_order)
+    feature_map = build_feature_name_map(list(result.feature_columns) + ["__intercept__"])
+    feature_map.setdefault("__intercept__", "截距")
+
+    report_localised = _localise_classification_report(result.classification_report, label_map)
+    confusion_localised = _localise_confusion_dataframe(result.confusion_matrix, label_order, label_map)
+    coefficients_localised = _localise_coefficients(result.coefficient_importance, label_map, feature_map)
+    permutation_localised = _localise_permutation(result.permutation_importance, feature_map)
+    predictions_localised = _localise_predictions(result.predictions, label_map)
 
     from joblib import dump
 
     dump(result.pipeline, model_path)
 
     feature_summary = feature_table[result.feature_columns].describe().transpose()
-    feature_summary.to_csv(summary_path, encoding="utf-8-sig")
+    summary_localised = _localise_feature_summary(feature_summary, feature_map)
+
+    report_localised.to_csv(report_path, index=False, encoding="utf-8-sig")
+    confusion_localised.to_csv(confusion_path, index=False, encoding="utf-8-sig")
+    coefficients_localised.to_csv(coefficients_path, index=False, encoding="utf-8-sig")
+    if permutation_localised is not None:
+        permutation_localised.to_csv(permutation_path, index=False, encoding="utf-8-sig")
+    predictions_localised.to_csv(predictions_path, index=False, encoding="utf-8-sig")
+    summary_localised.to_csv(summary_path, index=False, encoding="utf-8-sig")
     with features_used_path.open("w", encoding="utf-8") as handle:
         for feature in result.feature_columns:
-            handle.write(f"{feature}\n")
+            handle.write(f"{feature},{feature_map.get(feature, feature)}\n")
 
-    _plot_confusion_matrix_figure(result.confusion_matrix, confusion_plot_path)
+    _plot_confusion_matrix_figure(result.confusion_matrix, confusion_plot_path, class_labels=label_order)
     _plot_multiclass_roc(result, roc_plot_path)
 
 

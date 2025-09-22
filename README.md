@@ -46,7 +46,7 @@ pip install -r requirements.txt
 
 脚本 `scripts/extract_features.py` 读取 `config/dataset_config.yaml` 中的配置完成整个流程。主要步骤如下：
 
-1. **源域数据筛选**（`src/data_io/dataset_selection.py`）：根据轴转速、采样率、故障尺寸及载荷等指标，为每一类别（内圈/外圈/滚动体/正常）自动选取 `top_k_per_label` 个最接近目标工况（600 rpm、32 kHz）的文件。
+1. **源域数据筛选**（`src/data_io/dataset_selection.py`）：根据轴转速、采样率、故障尺寸及载荷等指标，为每一类别（内圈/外圈/滚动体/正常）自动选取最接近目标工况（600 rpm、32 kHz）的文件；当 `top_k_per_label` 设置为 `null/0/all` 时，将保留该类别下的全部样本（当前默认配置即保留全部 161 个源域样本）。
 2. **信号分段**（`src/feature_engineering/segmentation.py`）：默认将每条 8 秒信号按 1 秒窗口、50% 重叠切分，提高样本数量并缓解长序列非平稳影响。
 3. **特征计算**（`src/feature_engineering`）：
    - 时域统计（均值、标准差、峭度、峰值因子等）；

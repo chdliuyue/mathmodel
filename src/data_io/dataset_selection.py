@@ -13,7 +13,7 @@ class SelectionConfig:
 
     rpm_target: float
     sampling_rate_target: float
-    top_k_per_label: int = 5
+    top_k_per_label: Optional[int] = 5
     rpm_weight: float = 0.6
     sampling_rate_weight: float = 0.3
     load_weight: float = 0.05
@@ -71,7 +71,11 @@ def select_representative_files(
     for label, group in grouped.items():
         scored = [(summary, score_summary(summary, config)) for summary in group]
         scored.sort(key=lambda item: item[1])
-        selected.extend(scored[: config.top_k_per_label])
+        limit = config.top_k_per_label
+        if limit is None or limit <= 0:
+            selected.extend(scored)
+        else:
+            selected.extend(scored[: limit])
     return selected
 
 

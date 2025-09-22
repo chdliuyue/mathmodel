@@ -44,6 +44,12 @@ from src.feature_engineering.bearing import DEFAULT_BEARINGS
 LOGGER = logging.getLogger("feature_analysis")
 
 
+DATASET_DISPLAY_MAP = {
+    "source": "源域",
+    "target": "目标域",
+}
+
+
 def _safe_identifier(value: Optional[str]) -> str:
     if value is None:
         return "unknown"
@@ -290,7 +296,7 @@ def _render_detail_plots(
         )
         if summary_df is not None and not summary_df.empty:
             summary_copy = summary_df.copy()
-            summary_copy["数据域"] = domain_prefix
+            summary_copy["数据域"] = DATASET_DISPLAY_MAP.get(domain_prefix, domain_prefix)
             summary_copy["文件"] = getattr(summary, "file_id", "")
             summary_copy["通道"] = getattr(record, "channel", "")
             summary_copy["转速(rpm)"] = rpm_value

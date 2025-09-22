@@ -488,6 +488,18 @@ def _prepare_profile_for_mi(profile: np.ndarray) -> np.ndarray:
     return np.log1p(values * values.size)
 
 
+def _resample_profile(profile: np.ndarray, target_length: int) -> np.ndarray:
+    if target_length <= 0:
+        return np.zeros(0, dtype=float)
+    values = np.asarray(profile, dtype=float).ravel()
+    if values.size == 0:
+        return np.zeros(target_length, dtype=float)
+    if values.size == target_length:
+        return values
+    indices = np.linspace(0, values.size - 1, target_length)
+    return np.interp(indices, np.arange(values.size), values)
+
+
 def _profile_mutual_information(profile_a: np.ndarray, profile_b: np.ndarray, bins: int) -> float:
     a = _prepare_profile_for_mi(profile_a)
     b = _prepare_profile_for_mi(profile_b)
@@ -537,9 +549,9 @@ def _compute_consistency_features(
 
     bins = max(int(config.consistency_bins), 8)
     time_profile = _project_time_profile(signal_array, target_length)
-    stft_profile = stft_repr.energy.sum(axis=0)
-    cwt_profile = cwt_repr.energy.sum(axis=0)
-    mel_profile = mel_repr.energy.sum(axis=0)
+    stft_profile = _resample_profile(stft_repr.energy.sum(axis=0), target_length)
+    cwt_profile = _resample_profile(cwt_repr.energy.sum(axis=0), target_length)
+    mel_profile = _resample_profile(mel_repr.energy.sum(axis=0), target_length)
 
     features["tf_consistency_time_stft"] = _profile_mutual_information(time_profile, stft_profile, bins)
     features["tf_consistency_time_cwt"] = _profile_mutual_information(time_profile, cwt_profile, bins)
