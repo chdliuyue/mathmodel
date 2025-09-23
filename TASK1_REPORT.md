@@ -1,112 +1,172 @@
-# 任务1：数据处理全流程与数据字典
+# 任务1：跨域轴承数据处理与特征构建全流程说明
 
-## 背景与目标
+本说明面向希望快速掌握本仓库“任务1”实现细节的研发人员，覆盖从 MAT 原始振动信号加载、源域样本筛选、分段、特征提取到特征表落地及分析脚本的完整链路。文档结合源码目录（`src/data_io`、`src/feature_engineering`、`src/pipelines`、`src/tasks/task1` 与 `scripts/extract_features.py` 等）逐段拆解，帮助读者在不阅读全部代码的情况下理解每一个数据流和关键参数的作用。
 
-竞赛的任务1聚焦于“数据分析与故障特征提取”。本仓库已经实现从源域与目标域振动信号中筛选代表样本、分段、计算多域特征并输出结构化特征表的全流程。核心代码位于 `src/data_io`、`src/feature_engineering` 与 `src/pipelines`，并通过脚本 `scripts/extract_features.py` 完成自动化处理。
+---
 
-## 数据资源概览
+## 一、任务定位与总体结构
 
-### 源域（台架试验数据）
+- **目标**：从源域（台架）与目标域（现场）振动信号中抽取时域、频域、包络域、故障频带以及多模态时频特征，生成可直接用于后续建模（任务2）与迁移（任务3/4）的统一特征表及数据字典。
+- **总体流程**：
+  1. 读取配置（`config/dataset_config.yaml`）并解析输出路径；
+  2. 调用 `src/data_io/mat_loader.py` 读取 MAT 文件并构建 `FileSummary`/`SignalRecord`；
+  3. 依据 `SelectionConfig` 在源域内选择与目标工况最相近的文件（`dataset_selection.py`）；
+  4. 通过 `segment_signal` 对每个通道滑窗分段，调用 `FeatureExtractor` 叠加多类特征（`feature_engineering/`）；
+  5. 由 `FeatureDatasetBuilder` 汇总分段特征，补充元数据并写出 CSV；
+  6. 如启用附加脚本（`scripts/analyze_features.py`），进一步生成统计表、时频图、特征翻译字典等分析成果。
 
-- 假定目录：`sourceData/`。虽然仓库未附带 CWRU 原始数据，但 `src/data_io/mat_loader.py` 保留了 Case Western Reserve University (CWRU) 常见命名与变量结构的兼容逻辑：
-  - 读取 `.mat` 文件时会优先查找 `DE_time`/`FE_time`/`BA_time` 等典型变量名，同时兼容竞赛提供数据中的自定义通道名称；
-  - 文件名解析支持 CWRU 的 IR/OR/B/N 缩写、故障尺寸与负载（0–3HP）模式，在缺少这些字段时会自动回退为“未标注”状态，不会阻断流程；
-  - 若 `RPM`、采样率等元数据在文件中缺失，会根据文件名或配置给出的默认值推断，从而与竞赛数据的结构保持一致。
-- 文件命名中包含故障类型（IR/OR/B/N）、故障尺寸、负载等级等信息，`src/data_io/mat_loader.py` 负责解析并构造 `FileSummary`/`SignalRecord` 数据结构。该模块同时推断采样率、转速等元数据，并将通道与轴承型号（如 SKF6205/6203）建立映射，方便后续故障频率计算。
-- `src/data_io/dataset_selection.py` 根据配置计算与目标工况的相似度，为每个类别挑选最匹配的文件；当 `top_k_per_label` 为空值/0/`all` 时，会直接保留该类别下的全部样本，当前默认设置下共计纳入 161 条源域样本。
+---
 
-### 目标域（现场采集数据）
+## 二、核心模块代码地图
 
-- 仓库自带 16 条 8 秒振动信号，位于 `targetData/*.mat`。
-- 采样率与转速已知（默认 32 kHz、600 rpm），`load_target_directory` 会读取单通道信号并保存成与源域一致的结构，便于统一处理。
+| 模块 | 关键类/函数 | 作用概述 |
+| --- | --- | --- |
+| `src/data_io/mat_loader.py` | `LabelInfo`、`SignalRecord`、`FileSummary`、`load_source_file` | 负责解析 MAT 文件，自动识别常见通道名（DE/FE/BA/SENSOR），推断采样率、转速并拆解文件名中的故障编码、尺寸、负载等信息。 |
+| `src/data_io/dataset_selection.py` | `SelectionConfig`、`score_summary`、`select_representative_files` | 计算与目标 RPM/采样率/负载/故障尺寸的差异度，通过加权得分筛选每个故障类别的代表文件。 |
+| `src/feature_engineering/segmentation.py` | `segment_signal`、`Segment` | 以窗口+步长滑动的方式切割时序，支持重叠与补齐策略。 |
+| `src/feature_engineering/statistics.py` & `spectral.py` | `time_domain_features`、`frequency_domain_features`、`envelope_features`、`fault_frequency_band_features` | 计算多域统计量，封装故障频带能量与占比。
+| `src/feature_engineering/bearing.py` | `BearingSpec`、`DEFAULT_BEARINGS` | 定义 SKF6205/6203 等轴承几何参数、计算 BPFO/BPFI/BSF/FTF 理论频率及 ±带宽。 |
+| `src/feature_engineering/feature_extractor.py` | `FeatureExtractor` | 汇总各类特征并按 `fault_`、`time_` 等前缀组织列名，兼容未提供轴承参数的默认值。 |
+| `src/pipelines/build_feature_dataset.py` | `FeatureDatasetBuilder` | 将分段特征与元数据合并成 DataFrame，并生成源/目标域的特征表与元数据表。 |
+| `src/tasks/task1/pipeline.py` | `run_feature_pipeline` | 承上启下：解析 YAML、执行源域筛选+特征提取+CSV 写入，返回 `FeatureExtractionOutputs`。 |
+| `scripts/extract_features.py` | `run_pipeline` | 命令行入口，便于批量运行任务1。
 
-## 数据处理流程
+---
 
-1. **源域筛选**：`SelectionConfig` 对 RPM、采样率、负载、故障尺寸分别赋予权重，结合 `score_summary` 函数的归一化差异度计算，为每一类标签选出最相似的文件。
-2. **信号分段**：`segment_signal` 使用滑窗（默认 1 s，重叠 50%）将长时序切割成固定长度片段，缓解非平稳影响并扩充样本量。
-3. **特征提取**：`FeatureExtractor` 组合多个特征族：
-   - `time_domain_features` 计算均值、标准差、峭度、峰值因子等时域统计量；
-   - `frequency_domain_features` 获取谱质心、带宽、谱熵、主频、总能量等频域描述；
-   - `envelope_features` 通过 Hilbert 包络进一步提取包络统计与包络谱信息，并在分析脚本中以三维包络谱形式展示关键能量峰值；
-   - `fault_frequency_band_features` 根据轴承几何参数（SKF6205/6203）计算 BPFO/BPFI/BSF/FTF 附近的能量与能量占比。
-4. **结果输出**：`FeatureDatasetBuilder` 为每个分段生成一行特征记录，包含元数据（文件、通道、段索引、采样率、标签、故障尺寸等）以及所有特征字段，最终写入 CSV 供后续建模或分析使用。
+## 三、数据源兼容性与加载逻辑
 
-### 2025-09-21 功能完善
+### 3.1 源域 MAT 文件解析
 
-- **时频增强**：新增 `src/tasks/task3/features.py`，在运行任务3前即可复用，自动计算 STFT 与 CWT 统计量并以 `tf_*` 前缀拼接回特征表，为后续多模态诊断预留接口。
-- **故障频率校验**：结合 `BearingSpec.fault_frequencies` 输出的理论值，在特征表中新增 `fault_*_frequency` 字段，同时 `scripts/analyze_features.py` 会生成《故障特征频率验证.csv》，自动比较理论频率、包络谱峰值及误差，形成可追溯的验证记录。
-- **特征翻译词典**：`scripts/analyze_features.py` 会联动 `src/analysis/feature_dictionary.py` 输出《特征中英文对照表》，覆盖元数据、时域/频域/包络/故障带以及新增的时频特征，便于撰写报告与课堂展示。
-- **可视化优化**：协方差热图改为展示皮尔逊相关性，保留对角线为 1 的直观表现；时间序列网格自动抽取不同文件与通道，避免同一编号（如 B007）刷屏，提升报表的可读性。
+1. **命名解析**：
+   - 通过正则 `LABEL_PATTERN`/`SIZE_PATTERN` 识别 CWRU 常见的 IR/OR/B/N 编码及故障尺寸（千分之一英寸），遇到 `_1` 或 `1HP` 等格式均可解析。
+   - `LOAD_PATTERN` 支持下划线或 `HP` 结尾的负载写法，缺失时返回 `None`，不会阻断后续流程。
+2. **通道识别**：
+   - `CHANNEL_HINTS` 将包含 “DE”、“FE”、“BA” 的变量映射到驱动端、风扇端、基座通道；如果变量名是单个字母（目标域常见），则回退至 `SENSOR`。
+3. **采样率与转速推断**：
+   - 优先寻找递增的时间向量计算 `1/mean(diff)`；若不存在，则依据文件名中的 `48k`/`12k` 自动设定，最后回退到配置默认值。
+4. **数据结构**：
+   - `SignalRecord` 保存单通道波形、采样率、RPM、故障信息；
+   - `FileSummary` 汇总同一文件所有通道，附带 `label_info` 与 `metadata`（通道数量等）。
 
-### 2025-09-22 运行体验补充
+### 3.2 目标域 MAT 文件加载
 
-- **依赖回退提示**：当本地 SciPy 版本缺少 `signal.ricker` 或 `signal.cwt` 时，日志仅以 `INFO` 级别提示并启用高精度的解析/数值回退实现，不再以警告形式干扰主流程。
-- **跨任务衔接**：`pseudo_label_quality.csv` 继承任务1输出的 `row_index`、`file_id` 等元数据列，方便在任务3/4 中快速定位原始时序片段并复现多模态特征。
+- 目标域文件通常只有单通道，`load_target_file` 直接保留首个通道，并从配置读取采样率/RPM；
+- 当目标数据缺失时，`run_feature_pipeline` 会打印 `INFO` 级别日志而非报错，确保流水线健壮。
 
-> **延伸阅读**：基于该特征表开展的源域诊断建模流程与可解释性分析详见 [`TASK2_REPORT.md`](TASK2_REPORT.md)，可直接复用任务1输出完成任务2需求。
+---
 
-## 特征表字段说明
+## 四、源域样本筛选策略
 
-特征表包含三大类字段：
+1. `SelectionConfig` 中的 `rpm_target`、`sampling_rate_target`、`prefer_load`、`prefer_fault_sizes` 等来自配置；
+2. `score_summary` 计算如下加权得分：
+   - RPM、采样率与目标值的归一化差值分别乘以 `rpm_weight`/`sampling_rate_weight`；
+   - 负载、故障尺寸的惩罚函数在缺失时返回 1，保证未知工况不会被优先；
+   - 得分越低越匹配，`select_representative_files` 在每个标签内按升序选取 `top_k_per_label` 条（`null`/`all` 表示保留全部）。
+3. 元数据表 (`source_metadata.csv`) 记录每个文件的得分、负载、尺寸，方便核查筛选结果是否符合预期。
 
-1. **元数据列**：
-   - `dataset`：数据域标识（source/target）；
-   - `file_id` / `file_path` / `channel`：原始文件与通道信息；
-   - `segment_index`、`start_sample`、`end_sample`、`segment_length`、`segment_duration`：分段后的定位信息；
-   - `sampling_rate`、`rpm`：采样率与轴转速；
-   - `label`、`label_code`、`load_hp`、`fault_size_inch/mm`：源域标签与故障尺寸、负载等信息（目标域为空值）；
-   - `selection_score`：源域样本与目标工况的匹配得分。
+---
 
-2. **时域特征（前缀 `time_`）**：均值、标准差、方差、均方根、峰峰值、峭度、偏度、形状因子、峰值因子、冲击因子、裕度因子、信噪比等。
+## 五、信号分段与特征家族
 
-3. **频域/包络/故障带特征**：
-   - `freq_` 前缀：谱质心、频谱分布的偏度/峭度、主频、谱熵、谱峰值、总能量等；
-   - `env_` 前缀：Hilbert 包络的时域统计、包络谱峰值及带宽、包络谱熵等；
-   - `fault_` 前缀：针对 FTF/BPFO/BPFI/BSF ±bandwidth (默认 ±5 Hz) 的能量与能量占比。
+### 5.1 分段 (`segment_signal`)
 
-这些特征字段直接来源于 `src/feature_engineering/statistics.py` 与 `src/feature_engineering/spectral.py` 的函数输出，采用固定命名规则便于后续筛选。
+- `window_seconds` 默认 1 秒，`overlap` 默认 50%，即步长 = `window_size * (1 - overlap)`；
+- `drop_last` 控制是否丢弃尾部不足一窗的数据，必要时可设置为 `false` 并自动零填充。
 
-## 数据集制作方式
+### 5.2 特征提取 (`FeatureExtractor`)
 
-运行 `python scripts/extract_features.py --config config/dataset_config.yaml` 即可按照配置完成以下步骤：
+| 特征前缀 | 来源函数 | 说明 |
+| --- | --- | --- |
+| `time_` | `time_domain_features` | 均值、标准差、峭度、峰值因子、信噪比等 17 项统计量。 |
+| `freq_` | `frequency_domain_features` | 谱质心、主频、谱熵、谱峰值、总能量等；内部自动汉宁窗+`rfft`。 |
+| `env_` | `envelope_features` | Hilbert 包络的时域统计 + 包络谱峰值/带宽/熵。 |
+| `fault_` | `fault_frequency_band_features` + `BearingSpec.fault_frequencies` | 输出 FTF/BPFO/BPFI/BSF 的理论频率 (`*_frequency`) 及 ±带宽能量/能量占比。 |
+| `tf_` | `src/tasks/task3/features.py`（可选） | 若任务3启用，在此阶段即写入 STFT/CWT/Mel 统计，为后续迁移做准备。 |
 
-1. 读取源域、目标域目录及分段、特征、筛选等参数；
-2. 若源域数据存在，则在 `artifacts/`（或指定目录）下生成：
-   - `source_features.csv`：分段特征表；
-   - `source_selection.csv`：被选文件及其匹配得分；
-3. 生成目标域 `target_features.csv` 与 `target_metadata.csv`；
-4. 所有输出均包含完整的元数据与特征列，可直接用于分析或建模。
+- 当缺失轴承参数或 RPM 时，`FeatureExtractor` 会以 0 填充 `fault_*` 字段，确保特征列对齐。
 
-## 统计分析与可视化
+---
 
-为评估类别可分性、直观理解数据分布，新增脚本 `scripts/analyze_features.py` 支持：
+## 六、特征表构建与列字典
 
-- 读取源/目标特征表并自动合并；
-- 计算特征均值、标准差、方差、最小值、最大值等统计量，保存为 `feature_statistics.csv`；
-- 生成 t-SNE、UMAP 嵌入图，直观比较源域与目标域特征空间；
-- 绘制目标域（及可用时的源域）原始时域波形与谱图诊断视图。
-- 自动输出《故障特征频率验证.csv》，对比理论频率、实测峰值频率与幅值，辅助确认轴承参数配置是否正确。
-- 对每条信号生成《*_包络谱.png》，以 3D 表面 + 轨迹方式强化包络能量差异，并自动叠加理论故障频率标注。
+1. `FeatureDatasetBuilder.build` 遍历每个 `SignalRecord`，针对每个滑窗段生成一行字典：
+   - **元数据列**：`dataset`、`file_id`、`file_path`、`channel`、`segment_index`、`start_sample`、`end_sample`、`segment_length`、`segment_duration`、`sampling_rate`、`rpm`、`label`、`label_code`、`load_hp`、`fault_size_inch/mm`、`selection_score`；
+   - **特征列**：按前缀组织，可通过 `feature_dictionary.py` 自动翻译成中文含义。
+2. 源域表默认写入 `artifacts/task1/source_features.csv`，目标域表写入 `target_features.csv`，并配套 `source_selection.csv`（源域筛选元数据）与 `target_metadata.csv`（目标域文件概览）。
+3. 特征列数随配置而变：启用三类时频特征后，列数可超过 150，需注意下游模型的特征筛选策略。
 
-运行示例：
+---
 
-```bash
-python scripts/analyze_features.py --config config/dataset_config.yaml --preview-seconds 3
-```
+## 七、配置文件详解 (`config/dataset_config.yaml`)
 
-脚本会自动展示 16 条目标域信号与 19 个源域代表样本（`48kHz_Normal_data` 全部 4 条 + `12kHz_DE_data`/`12kHz_FE_data`/`48kHz_DE_data` 各自的 B、IR 以及 OR-`Centered`/`Opposite`/`Orthogonal` 组合，共 4 + 5×3 条），确保各工况都能在预览图中出现。输出默认存放在 `artifacts/analysis/` 目录，可通过参数 `--analysis-dir` 自定义位置。
+| 配置段 | 关键字段 | 说明 |
+| --- | --- | --- |
+| `source` | `root`、`pattern` | 源域数据目录及 glob 模式；支持子目录递归。 |
+| | `default_sampling_rate` | 当 MAT 中缺失采样率时使用的默认值。 |
+| | `segmentation` | `window_seconds`、`overlap`、`drop_last` 控制滑窗。 |
+| | `selection` | 同上所述的相似度加权参数。 |
+| | `channel_bearings` | 通道→轴承型号映射（默认 DE→SKF6205 等）。 |
+| | `feature` | 是否启用频域/包络/故障带及带宽设置。 |
+| `target` | `sampling_rate`、`rpm` | 目标域统一元数据，可覆盖每个文件内记录。 |
+| | `channel_bearings` | 目标域传感器对应轴承。 |
+| `outputs` | `directory`、文件名映射 | 调整产物存放位置与文件名。 |
 
-## 执行流程回顾与结果核对
+> **提示**：可在 `source.pattern` 中限定某些负载/故障组合，以缩小训练集或进行消融实验。
 
-- **运行流程**：建议首先执行 `python scripts/extract_features.py --config config/dataset_config.yaml`。脚本会在启动时打印配置摘要，并在每个阶段输出进度（已筛选的源域文件数量、分段窗口设置、特征计算状态等），便于核对是否加载了预期的数据目录。
-- **结果核查**：流程结束后应在输出目录（默认 `artifacts/task1/`）看到四张 CSV（源/目标特征表与元数据）。其中 `*_metadata.csv` 记录了筛选得分、轴承尺寸、采样率等关键指标，可与 CWRU 原始命名或竞赛数据清单逐项比对。
-- **一致性验证**：配合 `scripts/analyze_features.py` 的统计与可视化输出，可以快速审查源域/目标域之间的均值、方差、特征分布差异；若发现异常（如某些频带能量始终为 0），可回溯到 `feature_engineering` 模块定位问题。
-- **再利用指引**：任务1生成的 CSV 是任务2-4 的统一输入，只要保持列名一致，即可在不同实验中复用；若更换数据源，仅需调整 YAML 配置并重新运行本流程。
+---
 
-## 成果意义
+## 八、运行脚本与日志
 
-- **源域筛选**使得后续迁移学习建立在与目标工况更相似的数据上，减少域间差异；
-- **多域特征**覆盖时域、频域、包络谱与故障特征频带，兼顾传统诊断指标与机理解释；
-- **统一的数据字典**与统计分析脚本便于快速审查数据质量、对比源/目标域差异，为后续模型训练与迁移、自适应处理奠定基础。
+- 命令行执行：
+  ```bash
+  python scripts/extract_features.py --config config/dataset_config.yaml --output-dir artifacts/task1_custom
+  ```
+- 运行流程：脚本首先打印配置摘要，随后依次输出“加载源域文件”“筛选完成”“提取目标域特征”等日志节点，帮助监控耗时段。
+- 日志级别说明：
+  - `INFO`：常规进度、回退提示（如启用 CWT 解析/数值回退）；
+  - `WARNING`：文件缺失、某个 MAT 无信号通道、求解失败等；
+  - `DEBUG`（需手动开启）：打印更细粒度的窗口参数、特征列数量等。
 
-如需更多背景与操作说明，可结合 `README.md` 中的流程介绍与本数据字典一并参考。
+---
+
+## 九、配套分析脚本 (`scripts/analyze_features.py`)
+
+- 功能概述：
+  - 合并源/目标域特征，生成 `feature_statistics.csv`（均值/方差/极值）；
+  - 自动绘制 t-SNE、UMAP（依赖 `run_tsne`）、波形+谱图预览、包络谱 3D 面图；
+  - 根据 `BearingSpec` 校验理论频率与包络谱峰值误差，输出《故障特征频率验证.csv》；
+  - 调用 `feature_dictionary.py` 写出《特征中英文对照表》，覆盖 `time_`、`freq_`、`env_`、`fault_` 乃至 `tf_` 前缀。
+- 常用参数：`--preview-seconds` 控制波形展示长度，`--analysis-dir` 覆盖输出目录。
+
+---
+
+## 十、结果核查与质量控制清单
+
+1. **文件完整性**：确认 `artifacts/task1/` 下生成四个 CSV；若为空，检查数据路径或筛选条件是否过严。
+2. **特征分布**：使用分析脚本查看 `feature_statistics.csv` 与 t-SNE 图，验证源/目标域分布差异是否符合预期。
+3. **故障频率**：比对《故障特征频率验证.csv》中理论值与包络谱峰值，误差过大通常意味着轴承型号或 RPM 填写有误。
+4. **日志告警**：若出现“Segment too short for STFT”等提示，可调节 `window_seconds` 或禁用特定特征族。
+5. **再现性**：`selection_score`、`segment_index` 等列为后续伪标签追踪提供唯一索引，严禁在下游阶段擅自删除。
+
+---
+
+## 十一、与下游任务的衔接
+
+- **任务2**：直接读取 `source_features.csv`，使用 `label` 作为目标变量，`selection_score` 可用于加权或抽样。
+- **任务3**：复用任务2的建模配置，同时在 `_augment_with_time_frequency` 中读取任务1生成的 `tf_*` 列；若需要动态生成时频特征，可保持 YAML 中的一致参数。
+- **任务4**：解释性分析依赖任务3输出的伪标签及 `FeatureDictionary`，确保任务1阶段的列名保持稳定。
+
+---
+
+## 十二、常见问题与排查建议
+
+| 问题现象 | 可能原因 | 解决方案 |
+| --- | --- | --- |
+| 源域 CSV 为空 | `source.pattern` 未匹配到文件或所有文件被筛选剔除 | 检查目录与 `top_k_per_label`，或暂时关闭筛选（设置为 `null`）。 |
+| `fault_*` 全为 0 | RPM/轴承型号缺失 | 在配置中显式填写 `rpm` 或 `channel_bearings`。 |
+| 运行报错 “No numeric feature columns” | 读取的 CSV 为空或所有特征列为非数值 | 确认数据是否被正确写入、是否以 UTF-8-SIG 保存；必要时用 Pandas 检查列类型。 |
+| STFT/CWT 警告 | 段长过短或 SciPy 版本不含对应函数 | 调整 `window_seconds`、更新 SciPy 或接受内置回退实现。 |
+
+---
+
+通过以上流程，读者可以明确每一步的输入输出、代码位置以及可调参数，从而在本仓库基础上扩展特征、替换数据源或嵌入自定义的诊断策略。
