@@ -1,114 +1,166 @@
-# 任务2：源域故障诊断建模说明
+# 任务2：源域故障诊断建模与解释全景指南
 
-本说明文档用于补充仓库中“任务2：源域故障诊断”相关的整体设计思路、实现细节与使用指南，重点阐述模型的迁移潜力与多层可解释性设计。
-
-## 1. 任务目标回顾
-
-在任务1中，我们已经将原始振动信号转化为结构化特征表（含时域、频域、包络域、故障频带能量等）。任务2的目标是在此基础上：
-
-1. 构建一个能够在源域训练、并为后续跨域迁移奠定基础的诊断模型；
-2. 在建模过程中保留并增强可解释性，包括事前（模型结构与输入）、过程（特征对齐与训练日志）与事后（模型输出分析）三层；
-3. 对模型效果进行严格量化评估，输出指标与可视化报表以支撑后续分析。
-
-## 2. 数据准备与拆分策略
-
-* 输入数据来源：`artifacts/source_features.csv`，由任务1脚本生成，包含四类典型故障（外圈、内圈、滚动体、正常）及辅助元数据。
-* 数据清洗：训练脚本会自动丢弃缺失标签的记录，并剔除数值几乎恒定的特征列（如全部样本RPM相同等），避免无效特征干扰模型。
-* 数据划分：默认使用 75% / 25% 的训练-测试划分，优先尝试分层采样以保持每类样本占比一致，若分层失败则自动回退到普通随机划分。
-* 交叉验证：训练集内部再通过 `StratifiedKFold`（默认5折）执行稳健性评估，输出均值与方差，确保模型对采样波动不敏感。
-
-## 3. 模型架构与迁移能力设计
-
-训练脚本 `scripts/train_task2_model.py` 基于 scikit-learn Pipeline 构建如下流程：
-
-```
-缺失值填补（SimpleImputer, median）
-        ↓
-CORAL 特征对齐（CoralAligner）
-        ↓
-标准化（StandardScaler）
-        ↓
-带类权重的多分类逻辑回归
-```
-
-### 3.1 事前可解释性
-
-* **特征筛选**：仅使用任务1生成的物理含义明确的统计与频谱特征，且在建模前自动删除近乎常数的列，保证每个输入维度都具备可解释意义。
-* **模型选择**：逻辑回归本身为广泛应用的线性可解释模型，其系数可以直接映射为对各类故障的影响方向与强度。
-
-### 3.2 迁移过程可解释性
-
-* **CORAL 对齐（Correlation Alignment）**：`CoralAligner` 在源域上学习特征均值与协方差，并通过白化+再着色使得输入特征在训练过程中保持零均值和单位协方差。
-* **可迁移接口**：`CoralAligner` 提供 `set_target_statistics(mean, covariance)` 方法，可在任务3/4中引入目标域的统计量进行快速对齐，实现轻量迁移学习。
-* **对齐诊断**：训练脚本会保存 `source_cov_trace`、`source_cov_condition_number` 与 `whiten_identity_fro_error` 等指标，帮助判断源域特征是否充分被白化。
-
-### 3.3 事后可解释性
-
-* **逻辑回归系数**：输出 `coefficient_importance.csv`，包含每个特征在各故障类别下的系数、绝对值与赔率比，便于分析特征对分类的贡献方向与强度。
-* **Permutation Importance**：如配置启用，计算在测试集上的 permutation importance，直观展示各特征对整体性能的边际贡献。
-* **预测概率**：`predictions.csv` 保存测试集中每条样本的真实标签、预测标签以及各类别概率，为后续绘制 ROC、可靠性曲线等提供基础。
-
-## 4. 模型评估指标
-
-训练脚本默认输出以下指标：
-
-* **Train/Test Accuracy**：训练集与测试集准确率，评估拟合程度与泛化性能；
-* **Macro F1**：各类别 F1 值的算术平均，衡量类别不平衡情形下的整体表现；
-* **Classification Report**：细化至每个类别的 Precision、Recall、F1 与 Support，即便某类样本在测试集中缺失也会保留“正常 + 三类故障”的完整指标列；
-* **Confusion Matrix**：以 CSV 形式保存并附带中文类别名，便于直观观察误判模式；
-* **Cross-Validation Scores**：若启用交叉验证，输出折均值及标准差，用于衡量模型稳定性。
-
-## 5. 使用指南
-
-1. **确认已完成任务1**：确保 `artifacts/source_features.csv` 已生成；若缺失，可先运行 `python scripts/extract_features.py --config config/dataset_config.yaml`。
-2. **查看/调整配置**：`config/task2_config.yaml` 提供了数据划分、模型超参、特征对齐、解释性分析等可调项。常用参数说明如下：
-   * `split.test_size`：测试集比例；
-   * `model.class_weight`：是否对类别施加平衡权重（推荐 `balanced` 以抵御类别不均衡）；
-   * `alignment.enabled`：是否启用 CORAL 对齐，可用于 ablation；
-   * `interpretability.permutation_importance`：控制 permutation importance 的重复次数与指标（默认 `f1_macro`）。
-3. **运行训练脚本**：
-
-   ```bash
-   python scripts/train_task2_model.py --config config/task2_config.yaml
-   ```
-
-   可通过 `--feature-table`、`--output-dir` 参数覆盖配置中的默认路径。
-4. **查看输出**：训练结果默认写入 `artifacts/task2/`，具体文件说明见 README 表格。
-5. **复用模型**：加载 `source_domain_model.joblib` 即可在新数据上执行推理，若需要迁移，可先调用 `CoralAligner.set_target_statistics` 更新目标域统计量后再预测。
-
-## 6. 输出产物与结果核查
-
-- **指标文件**：`metrics.json` 汇总训练/测试准确率、宏平均 F1、交叉验证均值与方差、CORAL 对齐诊断指标，可直接写入技术报告；若存在 `alignment` 小节，说明 CORAL 白化未完全收敛，需要结合 `epsilon` 或特征预处理调参。
-- **解释性报表**：`coefficient_importance.csv` 与 `permutation_importance.csv`（如启用）提供线性权重与置换重要度两种视角，可交叉验证哪些特征对分类最敏感；`feature_summary.csv` 给出模型实际使用特征的统计范围，便于发现异常值。
-- **可视化输出**：脚本自动生成 `confusion_matrix_heatmap.png` 与 `roc_curves.png`。前者可直接用于 PPT/报告，后者可帮助评估阈值策略、挑选工作点。
-- **模型持久化**：`source_domain_model.joblib` 内嵌完整 Pipeline（缺失值填补、CORAL、标准化、分类器）。验证模型时可执行 `joblib.load` 并调用 `predict`、`predict_proba`，确认推理阶段与训练一致。
-- **基线对比**：若配置了 `benchmarks`，会生成 `model_comparison.csv`。建议重点关注与主模型差距较大的模型，思考是否需要组合或引入更强的非线性模型。
-- **预测结果**：`predictions.csv` 中既保留标签编码，也新增中文标签列与各类别概率（列名同样翻译为中文），便于进行误判排查与可视化。
-
-## 7. 结果解读建议
-
-* **比较系数与物理机理**：例如 `bpfo_energy` 对外圈故障应呈现正向贡献；若出现反常，可回溯特征提取或数据质量。
-* **关注对齐诊断**：`whiten_identity_fro_error` 越接近 0 表明 CORAL 白化越充分；若值较大，说明某些特征仍存在较强相关性，可考虑特征降维或正则化。
-* **利用预测概率**：可进一步绘制可靠性曲线、设定告警阈值，或为任务3的伪标签策略提供依据。
-
-## 8. 后续拓展方向
-
-* 在当前线性模型基础上引入非线性方法（如 Gradient Boosting、1D CNN），并保持 CORAL/可解释性模块的可复用性；
-* 结合目标域少量标注样本，验证 `CoralAligner` 的快速自适应能力，并探索多源统计量融合策略；
-* 将 permutation importance 与任务1中的特征重要性可视化结果结合，形成端到端的特征可信度评估框架。
-
-### 2025-09-21 架构升级小结
-
-- **模块分层**：建模逻辑迁移至 `src/tasks/task2/pipeline.py`，配合 `scripts/train_task2_model.py`，构成“配置解析 + 训练执行 + 产出写入”的标准流程，上游任务（task1）输出的 CSV 可无缝复用。
-- **迁移接口**：`run_transfer_learning`（task3）直接依赖 `SourceDiagnosisConfig`，无须重新实现模型训练；源域模型训练完毕即可接入时频增强特征与伪标签策略。
-- **模型对比**：在同一训练/测试划分下自动评估随机森林、梯度提升与支持向量机等基线模型，输出《model_comparison.csv》便于撰写对比分析。
-- **数据衔接**：新增的时间频率特征、故障频率校验表及特征翻译词典在任务2阶段已全部可用，下游任务若不需要可在配置中关闭；整条流水线保持“向后兼容，向前丰富”的设计目标。
-
-### 2025-09-22 运行体验优化
-
-- **日志降噪**：近乎常数特征的自动剔除调整为 `INFO` 级别，仅在首次出现时提示，同时仍在 `feature_summary.csv` 与 `features_used.txt` 中给出最终保留的特征集合，便于追溯。
-- **跨任务联动**：伪标签质量报表在任务3中新增双阈值布尔列，可结合任务2输出的特征重要性判断是否需要调节阈值或特征筛选策略。
+本文系统性整理“任务2”中源域模型训练的代码结构、配置项、执行流程与产物说明，帮助读者快速理解如何在任务1特征表基础上构建可迁移且具备多层可解释性的诊断模型。内容覆盖 `src/modeling/task2.py`、`src/tasks/task2/pipeline.py`、`config/task2_config.yaml` 与 `scripts/train_task2_model.py` 等关键模块。
 
 ---
 
-如需更深入了解实现细节或二次开发，可直接查阅 `src/modeling/task2.py` 与 `scripts/train_task2_model.py` 源码。
+## 一、任务目标与依赖
+
+1. **输入**：任务1生成的 `artifacts/task1/source_features.csv`，包含源域分段特征、标签及元数据；
+2. **输出**：训练好的源域诊断模型（`source_domain_model.joblib`）、评估指标、可视化、特征重要度报告与多模型对比表；
+3. **核心诉求**：
+   - 构建线性可解释模型（逻辑回归 + CORAL 对齐），作为后续迁移（任务3）与解释（任务4）的基础；
+   - 通过统一 Pipeline 保持数据预处理、对齐与分类器的一致性，方便任务3复用；
+   - 生成完备的可解释性与评估产物，以便技术报告撰写与专家复核。
+
+---
+
+## 二、代码结构速览
+
+| 模块 | 关键类/函数 | 职责 |
+| --- | --- | --- |
+| `src/modeling/task2.py` | `SourceDiagnosisConfig`、`CoralAligner`、`train_source_domain_model` | 定义配置数据类、CORAL 对齐器、训练主流程及各类诊断产出。 |
+| | `RealMedianImputer` | 将特征转换为实数并使用中位数填补缺失值，是 Pipeline 的首个步骤。 |
+| | `TrainingResult` | 封装训练结果（模型、指标、系数、预测、交叉验证等），供上层调用。 |
+| `src/tasks/task2/pipeline.py` | `Task2Config`、`resolve_task2_config` | 将 YAML 配置解析为数据类对象；
+| | `run_training` | 调用 `train_source_domain_model`，并负责输出本地化报表、绘图、模型持久化及基线对比。 |
+| `scripts/train_task2_model.py` | `run_training` | 命令行入口，支持覆盖特征表和输出目录。 |
+| `config/task2_config.yaml` | - | 默认配置，包括数据划分、模型超参、对齐策略、可解释性与基线模型列表。 |
+
+---
+
+## 三、数据准备与特征列解析
+
+1. **列筛选**：
+   - `SourceDiagnosisConfig.get_exclude_columns()` 默认剔除 `dataset`、`file_id`、`file_path` 等 9 个元数据列；
+   - 若 `feature_columns` 为空，则自动选择剩余的所有数值列；
+   - `_drop_near_constant_columns` 会移除只有单一取值的特征，避免无效维度进入模型。
+2. **缺失处理**：
+   - `RealMedianImputer` 在 `fit` 阶段提取中位数，在 `transform` 时将缺失替换为中位数；
+   - 对于可能的复数特征（如某些时频特征），先取实部再填补，并发出警告提示。
+3. **标签校验**：
+   - 模型预期的类别集合为 `{normal, ball_fault, inner_race_fault, outer_race_fault}`；
+   - 若检测到其他标签，将在日志中警告并过滤，确保训练集中只包含标准类别；
+   - Stratified split 若失败会自动退化为非分层随机划分，避免因样本稀少导致报错。
+
+---
+
+## 四、训练流水线分解
+
+整体 Pipeline 结构：
+
+```
+RealMedianImputer → CoralAligner → StandardScaler → LogisticRegression
+```
+
+1. **RealMedianImputer**：确保输入为实数并填补缺失；
+2. **CoralAligner**：
+   - 在 `fit` 阶段保存源域均值与协方差，计算白化矩阵；
+   - 通过 `set_target_statistics` 可在任务3/4 中注入目标域统计量，实现跨域对齐；
+   - `get_alignment_summary` 提供协方差迹、条件数、白化后与单位矩阵的 Frobenius 误差，用于评估对齐效果；
+3. **StandardScaler**：保证特征均值为 0、方差为 1，提高逻辑回归的数值稳定性；
+4. **LogisticRegression**：
+   - 默认 `penalty=l2`、`C=1.5`、`class_weight=balanced`、`max_iter=500`，兼容多分类；
+   - 系数矩阵 `coef_` 与截距 `intercept_` 在后续解释中被直接引用。
+
+---
+
+## 五、评估与解释性产出
+
+执行 `train_source_domain_model` 后将返回 `TrainingResult`，并经 `run_training` 写出如下成果：
+
+| 产物 | 内容说明 |
+| --- | --- |
+| `metrics.json` | 记录训练/测试准确率、宏平均 F1、交叉验证均值/标准差以及 CORAL 对齐诊断。 |
+| `classification_report.csv` | 本地化后的分类报告（precision/recall/F1/样本数），含中文指标名。 |
+| `confusion_matrix.csv` & `confusion_matrix_heatmap.png` | 数值表与可视化图，后者包含原始计数与行归一化对照。 |
+| `roc_curves.png` | 支持多分类 ROC，自动绘制 Micro/Macro AUC。 |
+| `coefficient_importance.csv` | 每个特征在各类别下的系数、优势比与绝对值，已翻译列名。 |
+| `permutation_importance.csv` | 若启用 permutation importance，输出均值/标准差排序结果。 |
+| `predictions.csv` | 测试集预测明细（含各类别概率），并提供中文标签列。 |
+| `feature_summary.csv` | 训练集中使用特征的描述统计，便于检查异常值。 |
+| `features_used.txt` | 保留最终进入模型的特征编码及中文名称，供复现使用。 |
+| `source_domain_model.joblib` | 序列化后的 Pipeline，可直接 `joblib.load` 预测。 |
+| `model_comparison.csv` | （可选）与随机森林、梯度提升、SVM 等基线模型的指标对比。 |
+
+---
+
+## 六、基线模型对比机制
+
+1. `Task2Config.benchmark_models` 支持在同一数据划分下评估多种算法：
+   - 支持类型：`random_forest`、`gradient_boosting`、`svc`、`extra_trees`、`logistic`、`knn`、`mlp`、`gaussian_nb` 等；
+   - 每个条目可单独设置 `params`（将在输出表中以 JSON 形式记录）。
+2. 评估流程：
+   - 复用主模型 Pipeline 的预处理步骤（Imputer + CoralAligner + StandardScaler）；
+   - 使用 `train_indices`、`test_indices` 与主模型保持一致的数据划分，确保公平比较；
+   - 输出训练/测试准确率及测试宏平均 F1，按测试准确率降序排序。
+3. 使用建议：
+   - 如果非线性模型表现显著更好，可考虑在任务3引入对应模型并重新设计解释方案；
+   - 若仅需查看主模型，请将 `benchmarks` 清空以缩短训练时间。
+
+---
+
+## 七、配置文件详解 (`config/task2_config.yaml`)
+
+| 配置段 | 关键字段 | 说明 |
+| --- | --- | --- |
+| `features` | `table_path` | 源域特征表路径，允许通过命令行 `--feature-table` 覆盖。 |
+| | `label_column` | 目标列，默认 `label`。 |
+| | `feature_columns` | 指定使用的特征列表，`null` 表示自动发现。 |
+| | `exclude_columns` | 额外排除的列。 |
+| `split` | `test_size`、`random_state`、`stratify` | 控制训练/测试划分策略。 |
+| `model` | `penalty`、`C`、`solver`、`max_iter`、`class_weight` | 逻辑回归超参。 |
+| `alignment` | `enabled`、`epsilon` | 是否启用 CORAL 及其正则项。 |
+| `cross_validation` | `enabled`、`folds`、`shuffle` | 控制交叉验证开关与折数。 |
+| `interpretability.permutation_importance` | `enabled`、`n_repeats`、`scoring` | permutation importance 设置。 |
+| `outputs` | `directory`、`metrics_file` 等 | 控制产物目录与文件名。 |
+| `benchmarks` | - | 多模型对比列表。 |
+
+---
+
+## 八、运行方式与日志
+
+- 命令行：
+  ```bash
+  python scripts/train_task2_model.py \
+      --config config/task2_config.yaml \
+      --feature-table artifacts/task1/source_features.csv \
+      --output-dir artifacts/task2_experiment
+  ```
+- 日志要点：
+  - `INFO`：加载特征、特征列数量、对齐诊断、基线模型训练状态；
+  - `WARNING`：标签缺失、分层划分失败、Permutation importance 异常等；
+  - `DEBUG`（需手动配置）：可输出更多特征筛选细节。
+
+---
+
+## 九、结果解读建议
+
+1. **指标对比**：重点关注 `metrics.json` 中的训练/测试差距与 `cv_mean_accuracy` 是否稳定；
+2. **系数分析**：将 `coefficient_importance.csv` 与任务1的数据字典对照，验证高权重特征的物理含义（例如外圈故障对 BPFO 能量呈正贡献）；
+3. **Permutation Importance**：与系数结果交叉验证，识别对分类贡献最大的特征组合；
+4. **混淆矩阵/ROC**：观察容易混淆的类别（如内圈 vs 滚动体），为后续伪标签阈值设置提供依据；
+5. **特征统计**：若 `feature_summary.csv` 显示特定特征存在极端值，可考虑在任务1阶段重新分段或标准化。
+
+---
+
+## 十、与任务3/4的衔接
+
+- 训练得到的 `SourceDiagnosisConfig` 和 Pipeline 会在任务3中复用，通过 `set_target_statistics` 与伪标签循环实现迁移；
+- `coefficient_importance.csv`、`feature_summary.csv` 与 `feature_dictionary.py` 输出形成任务4全局解释的基础；
+- `predictions.csv` 的概率列提供伪标签初始筛选的置信度参考。
+
+---
+
+## 十一、常见问题排查
+
+| 问题 | 可能原因 | 对策 |
+| --- | --- | --- |
+| `ValueError: No labeled samples available` | 输入 CSV 中 `label` 列为空或均缺失 | 检查任务1输出是否包含标签；必要时在配置中指定 `label_column`。 |
+| `Stratified split failed` 警告 | 某些类别样本过少 | 可降低 `test_size`、关闭分层或在任务1调整筛选范围。 |
+| Permutation importance 抛错 | 测试集样本过少或分类器不支持 `predict_proba` | 增大测试集、关闭 permutation、或改用支持概率输出的基线。 |
+| `CoralAligner` 诊断值过大 | 特征高度相关或标准化失败 | 增加 `epsilon`、减少特征数量或启用 PCA 等预处理。 |
+
+---
+
+通过以上说明，读者可以全面理解任务2的建模设计与产物意义，并在需要时定制配置、扩展基线或接入其他解释方法。
