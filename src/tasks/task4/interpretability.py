@@ -29,7 +29,7 @@ class GlobalInterpretabilityResult:
 
 
 def _build_label_mapping(labels: Sequence[str]) -> Dict[str, str]:
-    if not labels:
+    if labels is None or len(labels) == 0:
         return {}
     mapping = build_label_name_map(labels)
     return {str(key): value for key, value in mapping.items()}
@@ -83,6 +83,17 @@ def _compute_global_shap_summary(
     else:
         background_sample = background
 
+    background_matrix = background_sample.to_numpy()
+    try:
+        summary_clusters = max(10, int(round(np.sqrt(background_matrix.shape[0]))))
+        summary_clusters = min(summary_clusters, background_matrix.shape[0])
+        if summary_clusters < background_matrix.shape[0]:
+            background_summary = shap.kmeans(background_matrix, summary_clusters)
+        else:
+            background_summary = background_matrix
+    except Exception:  # pragma: no cover - defensive against optional dependency issues
+        background_summary = background_matrix
+
     target = result.target_features[feature_columns].astype(float)
     if target.empty:
         target = background_sample
@@ -91,7 +102,7 @@ def _compute_global_shap_summary(
     else:
         target_sample = target
 
-    explainer = shap.KernelExplainer(result.final_pipeline.predict_proba, background_sample.to_numpy())
+    explainer = shap.KernelExplainer(result.final_pipeline.predict_proba, background_summary)
     shap_values = explainer.shap_values(target_sample.to_numpy(), nsamples=nsamples)
     expected_value = explainer.expected_value
 
@@ -315,7 +326,18 @@ def _compute_shap_values(
     if len(background) > background_size:
         background = background.sample(background_size, random_state=42)
 
-    explainer = shap.KernelExplainer(result.final_pipeline.predict_proba, background.to_numpy())
+    background_matrix = background.to_numpy()
+    try:
+        summary_clusters = max(10, int(round(np.sqrt(background_matrix.shape[0]))))
+        summary_clusters = min(summary_clusters, background_matrix.shape[0])
+        if summary_clusters < background_matrix.shape[0]:
+            background_summary = shap.kmeans(background_matrix, summary_clusters)
+        else:
+            background_summary = background_matrix
+    except Exception:  # pragma: no cover - defensive
+        background_summary = background_matrix
+
+    explainer = shap.KernelExplainer(result.final_pipeline.predict_proba, background_summary)
     shap_values = explainer.shap_values(sample_frame[feature_columns].astype(float).to_numpy(), nsamples=nsamples)
     if isinstance(shap_values, list):
         contributions = np.asarray(shap_values[target_index][0], dtype=float)

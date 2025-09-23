@@ -357,15 +357,27 @@ def _apply_pseudo_labelling(
             }
         )
 
-        metadata_subset = target_frame.iloc[candidate_indices][list(metadata_columns) if metadata_columns else []]
-        quality_record = consistency_df.iloc[candidate_indices].copy()
-        quality_record = quality_record.reset_index(drop=False).rename(columns={"index": "row_index"})
-        quality_record["pseudo_iteration"] = iteration + 1
-        quality_record["max_probability"] = max_proba[candidate_indices]
-        quality_record["consistency_threshold"] = float(config.consistency_threshold)
-        if not metadata_subset.empty:
-            quality_record = pd.concat([quality_record.reset_index(drop=True), metadata_subset.reset_index(drop=True)], axis=1)
-        quality_records.append(quality_record)
+        iteration_quality = consistency_df.reset_index(drop=False).rename(columns={"index": "row_index"})
+        iteration_quality["pseudo_iteration"] = iteration + 1
+        iteration_quality["max_probability"] = max_proba.astype(float)
+        iteration_quality["threshold"] = float(config.confidence_threshold)
+        iteration_quality["consistency_threshold"] = float(config.consistency_threshold)
+        iteration_quality["meets_probability"] = max_proba >= float(config.confidence_threshold)
+        iteration_quality["meets_consistency"] = consistency_scores.to_numpy() >= float(config.consistency_threshold)
+        selection_mask = np.zeros(len(iteration_quality), dtype=bool)
+        if candidate_indices.size:
+            selection_mask[candidate_indices] = True
+        iteration_quality["selected"] = selection_mask
+        if metadata_columns:
+            metadata_snapshot = target_frame.reset_index(drop=False).rename(columns={"index": "row_index"})
+            keep_columns = ["row_index", *[column for column in metadata_columns if column in metadata_snapshot.columns]]
+            if len(keep_columns) > 1:
+                iteration_quality = iteration_quality.merge(
+                    metadata_snapshot[keep_columns],
+                    on="row_index",
+                    how="left",
+                )
+        quality_records.append(iteration_quality)
 
         if max_total is not None and total_selected >= max_total:
             break

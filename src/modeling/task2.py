@@ -294,7 +294,7 @@ def _drop_near_constant_columns(data: pd.DataFrame, columns: Sequence[str]) -> L
         else:
             selected.append(column)
     if dropped:
-        LOGGER.warning("Dropping near-constant columns: %s", ", ".join(sorted(dropped)))
+        LOGGER.info("Dropping near-constant columns: %s", ", ".join(sorted(dropped)))
     return selected
 
 
