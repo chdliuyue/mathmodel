@@ -182,7 +182,7 @@ def _cwt_wavelet(wavelet: str):
             return signal.ricker
         global _RICKER_FALLBACK_WARNED
         if not _RICKER_FALLBACK_WARNED:
-            LOGGER.warning("scipy.signal.ricker unavailable; using analytical fallback implementation.")
+            LOGGER.info("scipy.signal.ricker unavailable; using analytical fallback implementation.")
             _RICKER_FALLBACK_WARNED = True
         return _ricker_fallback
     if wavelet_lower in {"morlet", "morlet2"}:
@@ -205,7 +205,7 @@ def _fallback_cwt(
 
     global _CWT_FALLBACK_WARNED
     if not _CWT_FALLBACK_WARNED:
-        LOGGER.warning("scipy.signal.cwt unavailable; using numerical fallback implementation.")
+        LOGGER.info("scipy.signal.cwt unavailable; using numerical fallback implementation.")
         _CWT_FALLBACK_WARNED = True
 
     samples = data.size

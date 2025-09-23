@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -61,6 +62,9 @@ COLUMN_NAME_MAP = {
     "consistency_mean": "平均一致性",
     "consistency_min": "最小一致性",
     "consistency_max": "最大一致性",
+    "meets_probability": "通过置信度阈值",
+    "meets_consistency": "通过一致性阈值",
+    "selected": "是否采纳伪标签",
     "row_index": "目标索引",
     "predicted_label": "模型预测标签",
     "max_probability": "最大置信度",
@@ -614,8 +618,13 @@ def _plot_multimodal_example(
         if not result.pseudo_quality.empty and row_index is not None:
             quality_match = result.pseudo_quality[result.pseudo_quality.get("row_index") == row_index]
             if not quality_match.empty and "consistency_score" in quality_match.columns:
+                target_rows = quality_match
+                if "selected" in quality_match.columns:
+                    selected_rows = quality_match[quality_match["selected"]]
+                    if not selected_rows.empty:
+                        target_rows = selected_rows
                 try:
-                    consistency_value = float(quality_match["consistency_score"].iloc[-1])
+                    consistency_value = float(target_rows["consistency_score"].iloc[-1])
                 except Exception:
                     consistency_value = None
         try:
@@ -645,24 +654,80 @@ def _plot_consistency_scatter(pseudo_quality: pd.DataFrame, path: Path) -> None:
     frame = pseudo_quality.copy()
     configure_chinese_font()
     import matplotlib.pyplot as plt
+    from matplotlib import colors as mcolors
+
+    for column in ("max_probability", "consistency_score", "pseudo_iteration"):
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+
+    frame = frame.replace([np.inf, -np.inf], np.nan)
+    frame = frame.dropna(subset=["max_probability", "consistency_score"])
+    if frame.empty:
+        return
 
     probabilities = frame["max_probability"].astype(float)
     consistencies = frame["consistency_score"].astype(float)
     iterations = frame.get("pseudo_iteration")
-    if iterations is None:
-        iterations = pd.Series([1] * len(frame))
+    if iterations is None or iterations.isna().all():
+        iterations = pd.Series([1.0] * len(frame), index=frame.index)
     iteration_values = iterations.astype(float)
 
+    selected_mask = frame.get("selected")
+    if selected_mask is None:
+        selected_mask = pd.Series([True] * len(frame), index=frame.index)
+    else:
+        selected_mask = selected_mask.astype(bool)
+    unselected_mask = ~selected_mask
+
+    cmap = plt.get_cmap("viridis")
+    vmin = float(iteration_values.min())
+    vmax = float(iteration_values.max())
+    if math.isclose(vmin, vmax):
+        vmax = vmin + 1.0
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
     fig, ax = plt.subplots(figsize=(8.0, 5.8))
-    scatter = ax.scatter(
-        probabilities,
-        consistencies,
-        c=iteration_values,
-        cmap="viridis",
-        alpha=0.78,
-        edgecolors="none",
-        s=46,
-    )
+    scatter = None
+    if unselected_mask.any():
+        scatter = ax.scatter(
+            probabilities[unselected_mask],
+            consistencies[unselected_mask],
+            c=iteration_values[unselected_mask],
+            cmap=cmap,
+            norm=norm,
+            alpha=0.4,
+            edgecolors="none",
+            s=36,
+            label="未满足双阈值",
+        )
+    if selected_mask.any():
+        highlight = ax.scatter(
+            probabilities[selected_mask],
+            consistencies[selected_mask],
+            c=iteration_values[selected_mask],
+            cmap=cmap,
+            norm=norm,
+            alpha=0.95,
+            edgecolors="#222222",
+            linewidths=0.6,
+            s=140,
+            marker="*",
+            label="已采纳伪标签",
+        )
+        scatter = highlight if scatter is None else scatter
+    if scatter is None:
+        scatter = ax.scatter(
+            probabilities,
+            consistencies,
+            c=iteration_values,
+            cmap=cmap,
+            norm=norm,
+            alpha=0.75,
+            edgecolors="none",
+            s=46,
+        )
+    cbar = fig.colorbar(scatter, ax=ax)
+    cbar.set_label("伪标签迭代轮次")
     ax.set_xlabel("最大置信度")
     ax.set_ylabel("一致性得分")
     threshold = float(frame["threshold"].iloc[0]) if "threshold" in frame.columns else None
@@ -697,27 +762,41 @@ def _plot_consistency_scatter(pseudo_quality: pd.DataFrame, path: Path) -> None:
             label="一致性阈值",
         )
 
-    if probabilities.size >= 2 and consistencies.size >= 2:
+    unique_prob = np.unique(probabilities)
+    unique_consistency = np.unique(consistencies)
+    prob_range = float(unique_prob.max() - unique_prob.min()) if unique_prob.size else 0.0
+    cons_range = (
+        float(unique_consistency.max() - unique_consistency.min()) if unique_consistency.size else 0.0
+    )
+    if unique_prob.size >= 2 and unique_consistency.size >= 2 and prob_range > 1e-6 and cons_range > 1e-6:
         try:
-            slope, intercept = np.polyfit(probabilities, consistencies, 1)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=np.RankWarning)
+                slope, intercept = np.polyfit(probabilities, consistencies, 1)
             x_line = np.linspace(probabilities.min(), probabilities.max(), 200)
             y_line = slope * x_line + intercept
             ax.plot(x_line, y_line, color="#4c72b0", linestyle="--", linewidth=1.0, label="线性趋势")
-            corr = np.corrcoef(probabilities, consistencies)[0, 1]
-            if np.isfinite(corr):
-                ax.text(
-                    0.02,
-                    0.95,
-                    f"相关系数：{corr:.2f}",
-                    transform=ax.transAxes,
-                    fontsize="small",
-                    color="#333333",
-                )
+            std_prob = float(np.std(probabilities))
+            std_cons = float(np.std(consistencies))
+            if std_prob > 1e-6 and std_cons > 1e-6:
+                corr = np.corrcoef(probabilities, consistencies)[0, 1]
+                if np.isfinite(corr):
+                    ax.text(
+                        0.02,
+                        0.95,
+                        f"相关系数：{corr:.2f}",
+                        transform=ax.transAxes,
+                        fontsize="small",
+                        color="#333333",
+                    )
         except Exception:
-            pass
+            LOGGER.debug("Skipping trend line due to numerical instability", exc_info=True)
 
     ax.set_xlim(0.0, 1.02)
     ax.set_ylim(0.0, 1.02)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(loc="lower right")
     ax.grid(True, linestyle="--", alpha=0.3)
     handles, labels = ax.get_legend_handles_labels()
     if handles:

@@ -220,7 +220,7 @@ def run_tsne(frame: pd.DataFrame, prefixes: Sequence[str] = FEATURE_PREFIXES, ra
 def run_umap(
     frame: pd.DataFrame,
     prefixes: Sequence[str] = FEATURE_PREFIXES,
-    random_state: int = 42,
+    random_state: Optional[int] = None,
     n_neighbors: Optional[int] = None,
     min_dist: float = 0.1,
 ) -> Optional[EmbeddingResult]:
@@ -247,12 +247,16 @@ def run_umap(
     n_neighbors = min(n_neighbors, n_samples - 1)
 
     LOGGER.info("正在基于 %s 条样本运行 UMAP，邻居数设为 %s", n_samples, n_neighbors)
-    reducer = umap.UMAP(
-        n_components=2,
-        n_neighbors=n_neighbors,
-        min_dist=min_dist,
-        random_state=random_state,
-    )
+    umap_kwargs = {
+        "n_components": 2,
+        "n_neighbors": n_neighbors,
+        "min_dist": min_dist,
+        "init": "random",
+    }
+    if random_state is not None:
+        umap_kwargs["random_state"] = random_state
+
+    reducer = umap.UMAP(**umap_kwargs)
     embedding = reducer.fit_transform(scaled)
     return EmbeddingResult(embedding=embedding, data=frame.reset_index(drop=True), method="umap")
 
